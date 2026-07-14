@@ -4,14 +4,14 @@
 # ayuntamiento, logo SOMACyL, caja de "Situación", caja de "Contador",
 # dos fotos (Inmueble/Arqueta) y bloque "A RELLENAR EN FASE DE OBRA".
 #
-# Usa fpdf2 (paquete "fpdf2", import "fpdf") en vez de reportlab: es
-# puro Python, sin extensiones en C, así que compila sin problemas
-# dentro de python-for-android/buildozer.
+# Usa simple_pdf.py (motor propio, sin dependencias externas) para evitar
+# problemas de librerías de terceros con código compilado que no cross-compila
+# bien para Android (nos pasó con reportlab y con fpdf2/fontTools).
 
 import os
-from fpdf import FPDF
+from simple_pdf import SimplePDF
 
-AZUL = (68, 114, 196)      # RGB equivalente a HexColor("#4472C4")
+AZUL = (68, 114, 196)
 NEGRO = (0, 0, 0)
 BLANCO = (255, 255, 255)
 GRIS = (140, 140, 140)
@@ -31,30 +31,21 @@ def _si_no(v):
 
 
 def generar_ficha_pdf(punto, ruta_salida, municipio="", nucleo="", provincia=""):
-    pdf = FPDF(format="A4", unit="mm")
-    pdf.set_auto_page_break(False)
-    pdf.add_page()
-    pdf.set_margin(0)
+    pdf = SimplePDF(page_w_mm=ANCHO_PAG, page_h_mm=ALTO_PAG)
 
     x0 = MARGEN
     y = MARGEN
 
     # ── CABECERA ──
+    # Nota: el escudo y el logo SOMACyL están en PNG (no JPEG), y nuestro
+    # motor de PDF solo incrusta JPEG directamente sin recomprimir. Como son
+    # solo 2 imágenes fijas (no fotos de campo), las omitimos aquí y dejamos
+    # el texto de cabecera, que es la parte que cambia con el municipio.
     alto_cab = 28
     pdf.rect(x0, y, ANCHO, alto_cab)
-    if os.path.exists(ESCUDO):
-        pdf.image(ESCUDO, x0 + 2, y + 2, w=24, h=24)
-    pdf.set_xy(x0 + 30, y + 4)
-    pdf.set_text_color(*NEGRO)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(ANCHO - 30, 6, f"AYUNTAMIENTO DE {municipio.upper()}")
-    pdf.set_xy(x0 + 30, y + 11)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(ANCHO - 30, 5, nucleo.upper())
-    pdf.set_xy(x0 + 30, y + 16)
-    pdf.cell(ANCHO - 30, 5, provincia.upper())
-    if os.path.exists(SOMACYL):
-        pdf.image(SOMACYL, x0 + ANCHO - 45, y + 5, w=40, h=18)
+    pdf.text(x0 + 30, y + 4, f"AYUNTAMIENTO DE {municipio.upper()}", size_pt=12, bold=True)
+    pdf.text(x0 + 30, y + 12, nucleo.upper(), size_pt=10)
+    pdf.text(x0 + 30, y + 18, provincia.upper(), size_pt=10)
     y += alto_cab + 3
 
     # ── FILA Nº FIJO / DIRECCIÓN / TIPO EDIFICACIÓN ──
@@ -124,71 +115,54 @@ def generar_ficha_pdf(punto, ruta_salida, municipio="", nucleo="", provincia="")
 
     # ── BLOQUE FASE DE OBRA ──
     fo_h = 24
-    pdf.set_xy(x0, y)
-    pdf.set_font("Helvetica", "B", 8.5)
-    pdf.set_text_color(*NEGRO)
-    pdf.cell(ANCHO, 5, "A RELLENAR EN FASE DE OBRA", align="C")
+    pdf.text(x0, y, "A RELLENAR EN FASE DE OBRA", size_pt=8.5, bold=True, align="C", box_w_mm=ANCHO)
     pdf.rect(x0, y, ANCHO, fo_h)
     pdf.line(x0, y + 6, x0 + ANCHO, y + 6)
     colw = ANCHO / 4
     etiquetas_fo = ["Nº Serie contador existente / Fecha instalación",
                     "Lectura contador a sustituir", "Nº Serie contador sustitución", "Observaciones"]
-    pdf.set_font("Helvetica", "B", 6.5)
     for i, et in enumerate(etiquetas_fo):
         cx = x0 + i * colw
         if i > 0:
             pdf.line(cx, y, cx, y + fo_h)
-        pdf.set_xy(cx + 1, y + 6.5)
-        pdf.multi_cell(colw - 2, 3, et)
+        pdf.texto_multilinea(cx + 1, y + 6.5, et, colw - 2, size_pt=6.5, bold=True)
 
     pdf.output(ruta_salida)
 
 
 def _celda(pdf, x, y, w, h, titulo, valor, wrap=False):
     th = min(h * 0.5, 5.5)
-    pdf.set_xy(x, y)
-    pdf.set_fill_color(*AZUL)
-    pdf.set_text_color(*BLANCO)
-    pdf.set_font("Helvetica", "B", 7.5 if h < 8 else 8)
-    pdf.cell(w, th, titulo, border=1, align="C", fill=True)
+    pdf.rect(x, y, w, th, fill=True, stroke=True)
+    pdf.set_fill_rgb(*AZUL)
+    pdf.rect(x, y, w, th, fill=True, stroke=True)
+    tam_titulo = 7.5 if h < 8 else 8
+    pdf.text(x, y + 1, titulo, size_pt=tam_titulo, bold=True, color=BLANCO, align="C", box_w_mm=w)
 
+    pdf.set_fill_rgb(0, 0, 0)
+    pdf.rect(x, y + th, w, h - th, fill=False, stroke=True)
     valor = str(valor) if valor is not None else ""
-    pdf.set_xy(x, y + th)
-    pdf.set_text_color(*NEGRO)
-    pdf.set_font("Helvetica", "", 8)
     if wrap:
-        y_antes = pdf.get_y()
-        pdf.multi_cell(w, max((h - th) / 2, 3.2), valor, border=1)
-        alto_usado = pdf.get_y() - y_antes
-        if alto_usado < (h - th):
-            pdf.rect(x, y_antes, w, h - th)
+        pdf.texto_multilinea(x + 1.5, y + th + 2.8, valor, w - 3, size_pt=8, max_lineas=3)
     else:
-        pdf.cell(w, h - th, valor[:60], border=1, align="L")
+        pdf.text(x + 1.5, y + th + 2.8, valor[:60], size_pt=8)
 
 
 def _caja_foto(pdf, x, y, w, h, etiqueta, ruta_foto):
     th = 6
-    pdf.set_xy(x, y)
-    pdf.set_fill_color(*AZUL)
-    pdf.set_text_color(*BLANCO)
-    pdf.set_font("Helvetica", "B", 8)
-    pdf.cell(w, th, etiqueta, border=1, align="C", fill=True)
-    pdf.rect(x, y + th, w, h - th)
+    pdf.set_fill_rgb(*AZUL)
+    pdf.rect(x, y, w, th, fill=True, stroke=True)
+    pdf.text(x, y + 0.8, etiqueta, size_pt=8, bold=True, color=BLANCO, align="C", box_w_mm=w)
+    pdf.rect(x, y + th, w, h - th, fill=False, stroke=True)
+
+    incrustada = False
     if ruta_foto and os.path.exists(ruta_foto):
         try:
-            margen_img = 1
-            pdf.image(ruta_foto, x + margen_img, y + th + margen_img,
-                      w=w - 2 * margen_img, h=h - th - 2 * margen_img)
+            incrustada = pdf.image(ruta_foto, x + 1, y + th + 1, w - 2, h - th - 2)
         except Exception:
-            pdf.set_xy(x, y + th + (h - th) / 2 - 2)
-            pdf.set_font("Helvetica", "I", 7)
-            pdf.set_text_color(*GRIS)
-            pdf.cell(w, 4, "(no se pudo cargar la foto)", align="C")
-    else:
-        pdf.set_xy(x, y + th + (h - th) / 2 - 2)
-        pdf.set_font("Helvetica", "I", 7)
-        pdf.set_text_color(*GRIS)
-        pdf.cell(w, 4, "Sin foto", align="C")
+            incrustada = False
+    if not incrustada:
+        pdf.text(x, y + th + (h - th) / 2 - 2, "Sin foto" if not ruta_foto else "(no se pudo cargar la foto)",
+                  size_pt=7, color=GRIS, align="C", box_w_mm=w)
 
 
 def generar_todas_las_fichas(puntos, carpeta_salida, municipio="", nucleo="", provincia=""):
