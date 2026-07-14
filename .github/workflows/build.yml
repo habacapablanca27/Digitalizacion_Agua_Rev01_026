@@ -60,10 +60,9 @@ jobs:
 
       - name: Compilar APK
         env:
-          ACCEPT_SDK_LICENSE: "yes"
-          CI: "true"
+          VIRTUALENV_PIP: "24.0"
         run: |
-          buildozer -v android debug
+          yes | buildozer -v android debug
 
       - name: Guardar APK
         uses: actions/upload-artifact@v4
