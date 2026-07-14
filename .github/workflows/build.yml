@@ -47,16 +47,16 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Instalar Buildozer
-        run: |
-          python3 -m pip install --user "pip==24.0" setuptools wheel
-          python3 -m pip install --user buildozer cython==0.29.36
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          
       - name: Fijar restricción global de pip (bloquea auto-actualizaciones rotas)
         run: |
           echo "pip==24.0" > "$HOME/pip-constraints.txt"
           echo "PIP_CONSTRAINT=$HOME/pip-constraints.txt" >> "$GITHUB_ENV"
+
+      - name: Instalar Buildozer
+        run: |
+          python3 -m pip install --user "pip==24.0" setuptools wheel
+          python3 -m pip install --user buildozer cython==0.29.36
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"         
           
       - name: Cachear build de Buildozer (evita recrear el entorno de pip cada vez)
         uses: actions/cache@v4
