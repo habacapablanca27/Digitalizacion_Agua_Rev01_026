@@ -7,7 +7,7 @@ source.dir = .
 source.include_exts = py,png,jpg,jpeg,kv,atlas,ttf,csv,json
 version = 1.0.0
 
-requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,plyer,pyshp,fpdf2,pillow
+requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,plyer,pyshp,fpdf2,fonttools,defusedxml,pillow
 
 orientation = portrait
 fullscreen = 0
