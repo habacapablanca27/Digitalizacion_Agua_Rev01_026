@@ -17,7 +17,7 @@ icon.filename = %(source.dir)s/assets/escudo.png
 android.permissions = CAMERA,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,INTERNET
 
 android.api = 34
-android.minapi = 24
+android.minapi = 26
 android.ndk = 25b
 android.archs = arm64-v8a,armeabi-v7a
 android.accept_sdk_license = True
