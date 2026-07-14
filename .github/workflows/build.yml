@@ -49,7 +49,7 @@ jobs:
 
       - name: Instalar Buildozer
         run: |
-          python3 -m pip install --user --upgrade pip setuptools wheel
+          python3 -m pip install --user "pip==24.0" setuptools wheel
           python3 -m pip install --user buildozer cython==0.29.36
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
