@@ -53,10 +53,13 @@ jobs:
           python3 -m pip install --user buildozer cython==0.29.36
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Limpiar compilaciones anteriores
-        run: |
-          rm -rf .buildozer
-          rm -rf ~/.buildozer
+      - name: Cachear build de Buildozer (evita recrear el entorno de pip cada vez)
+        uses: actions/cache@v4
+        with:
+          path: |
+            .buildozer
+            ~/.buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
 
       - name: Compilar APK
         env:
