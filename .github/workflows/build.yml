@@ -14,16 +14,6 @@ jobs:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Cachear Buildozer
-        uses: actions/cache@v4
-        with:
-          path: |
-            .buildozer
-            ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
-
       - name: Instalar dependencias del sistema
         run: |
           sudo apt-get update
@@ -37,6 +27,8 @@ jobs:
             python3-wheel \
             autoconf \
             automake \
+            autopoint \
+            gettext \
             libtool \
             pkg-config \
             zlib1g-dev \
@@ -56,19 +48,18 @@ jobs:
 
       - name: Instalar Buildozer
         run: |
-          python3 -m pip install --user --upgrade pip
-          python3 -m pip install --user buildozer cython virtualenv
+          python3 -m pip install --user --upgrade pip setuptools wheel
+          python3 -m pip install --user buildozer cython==0.29.36
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Limpiar compilación anterior
+      - name: Limpiar compilaciones anteriores
         run: |
-          rm -rf .buildozer/android/platform/python-for-android
-          rm -rf .buildozer/android/platform/build-*
+          rm -rf .buildozer
+          rm -rf ~/.buildozer
 
       - name: Compilar APK
         env:
           ACCEPT_SDK_LICENSE: "yes"
-          JAVA_HOME: ${{ env.JAVA_HOME }}
         run: |
           buildozer -v android debug
 
