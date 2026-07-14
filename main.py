@@ -2,6 +2,49 @@
 # Sustituye al plugin QField cuando la cámara no conecta: aquí usamos
 # plyer.camera, que llama directamente al intent nativo de la cámara de Android.
 
+# ── CAPTURADOR DE ERRORES ──
+# Se instala ANTES de cualquier otro import, para que cualquier fallo
+# (incluso al importar kivy/plyer) quede registrado en un archivo que
+# se pueda leer luego desde el propio móvil con un gestor de archivos,
+# sin necesitar PC ni adb.
+import sys
+import traceback as _traceback
+import time as _time
+import os as _os
+
+
+def _carpeta_crash_log():
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        activity = PythonActivity.mActivity
+        return activity.getExternalFilesDir(None).getAbsolutePath()
+    except Exception:
+        return _os.path.expanduser("~")
+
+
+def _log_crash(exc_type, exc_value, exc_tb):
+    try:
+        folder = _carpeta_crash_log()
+        _os.makedirs(folder, exist_ok=True)
+        ruta = _os.path.join(folder, "crash_log.txt")
+        with open(ruta, "a", encoding="utf-8") as f:
+            f.write("\n\n=== " + _time.strftime("%Y-%m-%d %H:%M:%S") + " ===\n")
+            _traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _log_crash
+
+try:
+    with open(_os.path.join(_carpeta_crash_log(), "crash_log.txt"), "a", encoding="utf-8") as _f:
+        _f.write("\n\n=== " + _time.strftime("%Y-%m-%d %H:%M:%S") + " === Arranque de la app iniciado\n")
+except Exception:
+    pass
+# ── FIN CAPTURADOR DE ERRORES ──
+
 import os
 import shutil
 from datetime import datetime
