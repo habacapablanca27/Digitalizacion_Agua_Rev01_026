@@ -205,6 +205,111 @@ def listar_capas_vectoriales_qgs(ruta_qgs):
     return capas
 
 
+def _buscar_archivo(carpeta, nombre_archivo):
+    for raiz, _dirs, archivos in os.walk(carpeta):
+        if nombre_archivo in archivos:
+            return os.path.join(raiz, nombre_archivo)
+    return None
+
+
+def _simplificar_anillo(anillo, max_puntos=40):
+    """Reduce el número de vértices de un anillo (parcela/línea) para que
+    dibujarlo en el móvil no vaya lento. Es una simplificación básica
+    (coge 1 de cada N puntos), no exacta como Douglas-Peucker, pero de
+    sobra para ver la silueta de referencia en el mapa."""
+    if len(anillo) <= max_puntos:
+        return anillo
+    paso = max(1, len(anillo) // max_puntos)
+    reducido = anillo[::paso]
+    if reducido[-1] != anillo[-1]:
+        reducido.append(anillo[-1])
+    return reducido
+
+
+def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500):
+    """Lee CUALQUIER shapefile (puntos, líneas o polígonos) y devuelve sus
+    geometrías ya convertidas a Lat/Lon, para dibujarlas como capa de fondo
+    en el mapa (parcelas, construcciones, límites, etc.). No trae los
+    atributos/campos, solo la forma.
+
+    max_anillos: límite de seguridad para no cargar capas gigantes que
+    harían el mapa lentísimo en el móvil (con eso sobra para un municipio).
+    """
+    ruta_shp = _buscar_archivo(carpeta, nombre_shp)
+    if not ruta_shp:
+        return None
+
+    base = ruta_shp[:-4]
+    info_utm = _leer_zona_utm_desde_prj(base + ".prj")
+
+    sf = shapefile.Reader(ruta_shp)
+    tipo_geom = sf.shapeTypeName.lower()
+    if "polygon" in tipo_geom:
+        tipo = "polygon"
+    elif "polyline" in tipo_geom or "line" in tipo_geom:
+        tipo = "polyline"
+    else:
+        tipo = "point"
+
+    def convertir(x, y):
+        if info_utm:
+            zona, hemisferio_norte = info_utm
+            lat, lon = _utm_a_latlon(x, y, zona, hemisferio_norte)
+        else:
+            lon, lat = x, y
+        return round(lat, 6), round(lon, 6)
+
+    anillos = []
+    for shape in sf.iterShapes():
+        puntos = shape.points
+        if not puntos:
+            continue
+        if tipo == "point":
+            lat, lon = convertir(*puntos[0])
+            anillos.append([[lat, lon]])
+        else:
+            partes = list(shape.parts) + [len(puntos)]
+            for i in range(len(partes) - 1):
+                trozo = puntos[partes[i]:partes[i + 1]]
+                anillo = [list(convertir(x, y)) for x, y in trozo]
+                if len(anillo) >= 2:
+                    anillos.append(_simplificar_anillo(anillo))
+        if len(anillos) >= max_anillos:
+            break
+
+    return {"tipo": tipo, "anillos": anillos}
+
+
+def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_capa=800):
+    """Lee las capas de fondo QUE EL USUARIO ELIGIÓ (lista de dicts con
+    'nombre' y 'archivo_shp') y las guarda en un JSON ligero para
+    dibujarlas de referencia en el mapa (parcelas, límite, construcciones...).
+    """
+    import json
+
+    paleta = [
+        [0.9, 0.5, 0.1],     # naranja
+        [0.2, 0.6, 0.3],     # verde
+        [0.55, 0.35, 0.15],  # marrón
+        [0.4, 0.4, 0.8],     # azul-violeta
+        [0.8, 0.2, 0.2],     # rojo
+    ]
+    resultado = []
+    for i, capa in enumerate(capas_elegidas):
+        geom = leer_geometria_capa(carpeta, capa["archivo_shp"], max_anillos=max_anillos_por_capa)
+        if not geom or not geom["anillos"]:
+            continue
+        resultado.append({
+            "nombre": capa["nombre"],
+            "tipo": geom["tipo"],
+            "color": paleta[i % len(paleta)],
+            "anillos": geom["anillos"],
+        })
+    with open(ruta_salida, "w", encoding="utf-8") as f:
+        json.dump(resultado, f)
+    return resultado
+
+
 def leer_puntos_desde_carpeta(carpeta, nombre_shp=None):
     """Lee un Shapefile de puntos que ya está en una carpeta local
     (sin comprimir). Si nombre_shp se indica, usa ese archivo en
