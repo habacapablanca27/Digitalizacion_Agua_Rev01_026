@@ -60,7 +60,6 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.spinner import Spinner
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.popup import Popup
-from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.image import Image
 from kivy.metrics import dp
 from kivy.clock import Clock
@@ -99,17 +98,17 @@ class PantallaImportar(Screen):
     def __init__(self, **kw):
         super().__init__(**kw)
         root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
-        root.add_widget(Label(text="💧 Digitalización del Agua", font_size=dp(22),
+        root.add_widget(Label(text="Digitalización del Agua", font_size=dp(22),
                                size_hint_y=None, height=dp(40), bold=True))
         root.add_widget(Label(text="Importa el CSV del Padrón para empezar,\n"
                                     "o continúa con los puntos ya cargados.",
                                size_hint_y=None, height=dp(50)))
 
-        btn_importar = Button(text="📂 Importar Padrón (CSV)", size_hint_y=None, height=dp(56))
+        btn_importar = Button(text="Importar Padrón (CSV)", size_hint_y=None, height=dp(56))
         btn_importar.bind(on_release=self.abrir_selector)
         root.add_widget(btn_importar)
 
-        btn_continuar = Button(text="➡ Ver puntos cargados", size_hint_y=None, height=dp(56))
+        btn_continuar = Button(text="Ver puntos cargados", size_hint_y=None, height=dp(56))
         btn_continuar.bind(on_release=lambda *_: self.ir_a_lista())
         root.add_widget(btn_continuar)
 
@@ -123,25 +122,28 @@ class PantallaImportar(Screen):
         self.info.text = f"Puntos cargados actualmente: {n}"
 
     def abrir_selector(self, *_):
-        chooser = FileChooserListView(path=os.path.expanduser("~"), filters=["*.csv"])
-        box = BoxLayout(orientation="vertical")
-        box.add_widget(chooser)
-        botones = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-        popup = Popup(title="Selecciona el CSV del Padrón", content=box, size_hint=(0.95, 0.95))
+        try:
+            from plyer import filechooser
+            filechooser.open_file(
+                on_selection=self._al_elegir_archivo,
+                filters=[["Archivos CSV", "*.csv"]],
+            )
+        except Exception as e:
+            self.info.text = f"No se pudo abrir el selector de archivos: {e}"
 
-        def elegir(*_):
-            if chooser.selection:
-                self._importar(chooser.selection[0])
-            popup.dismiss()
+    def _al_elegir_archivo(self, seleccion):
+        if not seleccion:
+            return
+        ruta = seleccion[0]
 
-        b_ok = Button(text="Importar")
-        b_ok.bind(on_release=elegir)
-        b_cancel = Button(text="Cancelar")
-        b_cancel.bind(on_release=lambda *_: popup.dismiss())
-        botones.add_widget(b_ok)
-        botones.add_widget(b_cancel)
-        box.add_widget(botones)
-        popup.open()
+        def hacer_importacion(_dt):
+            ruta_local = _resolver_a_ruta_local(ruta)
+            if ruta_local:
+                self._importar(ruta_local)
+            else:
+                self.info.text = "No se pudo leer el archivo seleccionado."
+
+        Clock.schedule_once(hacer_importacion, 0)
 
     def _importar(self, path):
         try:
@@ -156,12 +158,43 @@ class PantallaImportar(Screen):
             for i, p in enumerate(existentes):
                 p["_id"] = i
             ds.guardar_puntos(existentes)
-            self.info.text = f"✔ Importados {len(nuevos)} puntos nuevos."
+            self.info.text = f"Importados {len(nuevos)} puntos nuevos."
         except Exception as e:
-            self.info.text = f"✖ Error al importar: {e}"
+            self.info.text = f"Error al importar: {e}"
 
     def ir_a_lista(self):
         self.manager.current = "lista"
+
+
+def _resolver_a_ruta_local(ruta):
+    """En Android, el selector nativo puede devolver una URI 'content://' en
+    vez de una ruta de archivo normal. La copiamos a un archivo temporal
+    dentro de la carpeta privada de la app para poder abrirla con open()."""
+    if not ruta:
+        return None
+    if not str(ruta).startswith("content://"):
+        return ruta if os.path.exists(ruta) else None
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        Uri = autoclass("android.net.Uri")
+        activity = PythonActivity.mActivity
+        resolver = activity.getContentResolver()
+        uri = Uri.parse(ruta)
+        entrada = resolver.openInputStream(uri)
+
+        destino = os.path.join(ds.data_dir(), "padron_importado.csv")
+        buffer_java = bytearray(4096)
+        with open(destino, "wb") as salida:
+            while True:
+                leido = entrada.read(buffer_java)
+                if leido == -1:
+                    break
+                salida.write(bytes(buffer_java[:leido]))
+        entrada.close()
+        return destino
+    except Exception:
+        return None
 
 
 # ───────────────────────── PANTALLA: LISTA DE PUNTOS ─────────────────────────
@@ -184,9 +217,9 @@ class PantallaLista(Screen):
         root.add_widget(scroll)
 
         acciones = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
-        b_shp = Button(text="🗺️ Exportar Shapefile")
+        b_shp = Button(text="Exportar Shapefile")
         b_shp.bind(on_release=self.exportar_shp)
-        b_pdf = Button(text="📄 Generar Fichas PDF")
+        b_pdf = Button(text="Generar Fichas PDF")
         b_pdf.bind(on_release=self.generar_pdfs)
         acciones.add_widget(b_shp)
         acciones.add_widget(b_pdf)
@@ -202,7 +235,7 @@ class PantallaLista(Screen):
     def refrescar(self):
         self.scroll_layout.clear_widgets()
         for p in ds.cargar_puntos():
-            estado_txt = "✅" if p.get("Completado") else "⏳"
+            estado_txt = "[OK]" if p.get("Completado") else "[...]"
             fila = Button(
                 text=f"{estado_txt}  {p.get('NFijo','')}  —  {p.get('Direccion','(sin dirección)')}",
                 size_hint_y=None, height=dp(52), halign="left",
@@ -218,19 +251,19 @@ class PantallaLista(Screen):
     def exportar_shp(self, *_):
         puntos = ds.cargar_puntos()
         if not puntos:
-            self.estado.text = "⚠ No hay puntos para exportar."
+            self.estado.text = "No hay puntos para exportar."
             return
         carpeta = exportar_shapefile(puntos)
-        self.estado.text = f"✔ Shapefile guardado en:\n{carpeta}"
+        self.estado.text = f"Shapefile guardado en:\n{carpeta}"
 
     def generar_pdfs(self, *_):
         puntos = [p for p in ds.cargar_puntos() if p.get("Completado")]
         if not puntos:
-            self.estado.text = "⚠ No hay fichas completadas todavía."
+            self.estado.text = "No hay fichas completadas todavia."
             return
         carpeta = os.path.join(ds.data_dir(), "fichas_pdf")
         generar_todas_las_fichas(puntos, carpeta)
-        self.estado.text = f"✔ {len(puntos)} fichas PDF generadas en:\n{carpeta}"
+        self.estado.text = f"{len(puntos)} fichas PDF generadas en:\n{carpeta}"
 
 
 # ───────────────────────── PANTALLA: FICHA DE CAMPO ─────────────────────────
@@ -273,9 +306,9 @@ class PantallaFicha(Screen):
         root.add_widget(scroll)
 
         acciones = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8), padding=(dp(8), dp(4)))
-        b_gps = Button(text="📍 Capturar GPS")
+        b_gps = Button(text="Capturar GPS")
         b_gps.bind(on_release=self.capturar_gps)
-        b_guardar = Button(text="💾 Guardar")
+        b_guardar = Button(text="Guardar")
         b_guardar.bind(on_release=self.guardar)
         acciones.add_widget(b_gps)
         acciones.add_widget(b_guardar)
@@ -322,7 +355,7 @@ class PantallaFicha(Screen):
         self._texto("CoordGPS", "Coordenadas GPS (o pulsa Capturar GPS)")
         self._texto("Observaciones", "Observaciones")
 
-        self.form.add_widget(Label(text="📷 Fotografías", size_hint_y=None, height=dp(34)))
+        self.form.add_widget(Label(text="Fotografías", size_hint_y=None, height=dp(34)))
         self.form.add_widget(Label(text="", size_hint_y=None, height=dp(34)))
         for campo, etiqueta in CAMPOS_FOTO:
             self._foto(campo, etiqueta)
@@ -370,7 +403,7 @@ class PantallaFicha(Screen):
     def _foto(self, campo, etiqueta):
         cont = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(140), spacing=dp(4))
         img = Image(size_hint_y=None, height=dp(90))
-        btn = Button(text=f"📷 {etiqueta}", size_hint_y=None, height=dp(44))
+        btn = Button(text=f"Foto: {etiqueta}", size_hint_y=None, height=dp(44))
         btn.bind(on_release=lambda *_: self._tomar_foto(campo, img))
         cont.add_widget(img)
         cont.add_widget(btn)
@@ -381,13 +414,13 @@ class PantallaFicha(Screen):
     # -- cámara y GPS --
     def _tomar_foto(self, campo, img_widget):
         if camera is None:
-            self.estado.text = "⚠ Cámara no disponible en este dispositivo/emulador."
+            self.estado.text = "Camara no disponible en este dispositivo/emulador."
             return
         destino = os.path.join(ds.photos_dir(), f"{self.punto['_id']}_{campo}.jpg")
         try:
             camera.take_picture(filename=destino, on_complete=lambda path: self._foto_lista(campo, img_widget, path))
         except Exception as e:
-            self.estado.text = f"✖ Error de cámara: {e}"
+            self.estado.text = f"Error de camara: {e}"
 
     def _foto_lista(self, campo, img_widget, path):
         def actualizar(_dt):
@@ -395,21 +428,21 @@ class PantallaFicha(Screen):
                 self.punto[campo] = path
                 img_widget.source = path
                 img_widget.reload()
-                self.estado.text = f"📷 Foto {campo} capturada."
+                self.estado.text = f"Foto {campo} capturada."
             else:
-                self.estado.text = "⚠ No se recibió la foto (cancelada)."
+                self.estado.text = "No se recibio la foto (cancelada)."
         Clock.schedule_once(actualizar, 0)
 
     def capturar_gps(self, *_):
         if gps is None:
-            self.estado.text = "⚠ GPS no disponible en este dispositivo/emulador."
+            self.estado.text = "GPS no disponible en este dispositivo/emulador."
             return
         try:
             gps.configure(on_location=self._gps_recibido)
             gps.start(minTime=1000, minDistance=0)
-            self.estado.text = "📡 Buscando señal GPS..."
+            self.estado.text = "Buscando senal GPS..."
         except Exception as e:
-            self.estado.text = f"✖ Error de GPS: {e}"
+            self.estado.text = f"Error de GPS: {e}"
 
     def _gps_recibido(self, **kwargs):
         lat = kwargs.get("lat")
@@ -417,7 +450,7 @@ class PantallaFicha(Screen):
         if lat is not None and lon is not None:
             def actualizar(_dt):
                 self.inputs["CoordGPS"].text = f"{lat}, {lon}"
-                self.estado.text = "✔ GPS capturado."
+                self.estado.text = "GPS capturado."
             Clock.schedule_once(actualizar, 0)
             try:
                 gps.stop()
@@ -436,7 +469,7 @@ class PantallaFicha(Screen):
                 self.punto[campo] = widget.text
         self.punto["Completado"] = True
         ds.actualizar_punto(self.punto)
-        self.estado.text = "✔ Guardado correctamente."
+        self.estado.text = "Guardado correctamente."
 
     def volver(self, *_):
         self.manager.current = "lista"
