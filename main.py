@@ -111,13 +111,21 @@ class PantallaImportar(Screen):
         root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
         root.add_widget(Label(text="Digitalización del Agua", font_size=dp(22),
                                size_hint_y=None, height=dp(40), bold=True))
-        root.add_widget(Label(text="Importa el CSV del Padrón para empezar,\n"
+        root.add_widget(Label(text="Importa el Padrón (CSV o Shapefile) para empezar,\n"
                                     "o continúa con los puntos ya cargados.",
                                size_hint_y=None, height=dp(50)))
 
         btn_importar = Button(text="Importar Padrón (CSV)", size_hint_y=None, height=dp(56))
-        btn_importar.bind(on_release=self.abrir_selector)
+        btn_importar.bind(on_release=lambda *_: self.abrir_selector("csv"))
         root.add_widget(btn_importar)
+
+        btn_importar_shp = Button(text="Importar Shapefile (ZIP)", size_hint_y=None, height=dp(56))
+        btn_importar_shp.bind(on_release=lambda *_: self.abrir_selector("shapefile"))
+        root.add_widget(btn_importar_shp)
+
+        btn_importar_qgs = Button(text="Importar capa desde carpeta QGIS (.qgs)", size_hint_y=None, height=dp(56))
+        btn_importar_qgs.bind(on_release=lambda *_: self.abrir_selector_carpeta())
+        root.add_widget(btn_importar_qgs)
 
         btn_continuar = Button(text="Ver puntos cargados", size_hint_y=None, height=dp(56))
         btn_continuar.bind(on_release=lambda *_: self.ir_a_lista())
@@ -132,16 +140,18 @@ class PantallaImportar(Screen):
         n = len(ds.cargar_puntos())
         self.info.text = f"Puntos cargados actualmente: {n}"
 
-    def abrir_selector(self, *_):
-        _log_debug("Boton 'Importar Padron' pulsado")
+    def abrir_selector(self, tipo, *_):
+        self._tipo_importacion = tipo
+        _log_debug(f"Boton 'Importar' pulsado, tipo={tipo}")
         self.info.text = "Abriendo selector de archivos..."
         try:
             from plyer import filechooser
+            if tipo == "csv":
+                filtros = [["Archivos CSV", "*.csv"]]
+            else:
+                filtros = [["Archivos ZIP", "*.zip"]]
             _log_debug("plyer.filechooser importado correctamente, llamando a open_file")
-            filechooser.open_file(
-                on_selection=self._al_elegir_archivo,
-                filters=[["Archivos CSV", "*.csv"]],
-            )
+            filechooser.open_file(on_selection=self._al_elegir_archivo, filters=filtros)
             _log_debug("Llamada a open_file() realizada sin excepcion")
         except Exception as e:
             _log_debug(f"EXCEPCION al abrir selector: {e!r}")
@@ -169,23 +179,138 @@ class PantallaImportar(Screen):
 
     def _importar(self, path):
         try:
-            nuevos = ds.importar_padron_csv(path)
-            existentes = ds.cargar_puntos()
-            # Evita duplicar si se reimporta el mismo padrón
-            existentes_ids = {p.get("NFijo") for p in existentes if p.get("NFijo")}
-            for p in nuevos:
-                if p.get("NFijo") and p["NFijo"] in existentes_ids:
-                    continue
-                existentes.append(p)
-            for i, p in enumerate(existentes):
-                p["_id"] = i
-            ds.guardar_puntos(existentes)
-            self.info.text = f"Importados {len(nuevos)} puntos nuevos."
+            if getattr(self, "_tipo_importacion", "csv") == "shapefile":
+                from importar_shapefile import importar_padron_shapefile_zip
+                nuevos = importar_padron_shapefile_zip(path)
+            else:
+                nuevos = ds.importar_padron_csv(path)
+            self._fusionar_e_importar(nuevos)
         except Exception as e:
+            _log_debug(f"EXCEPCION al importar: {e!r}")
             self.info.text = f"Error al importar: {e}"
 
     def ir_a_lista(self):
         self.manager.current = "lista"
+
+    # ---- importación desde carpeta de proyecto QGIS (.qgs), sin comprimir ----
+    def abrir_selector_carpeta(self, *_):
+        _log_debug("Boton 'Importar desde carpeta QGIS' pulsado")
+        self.info.text = "Abriendo selector de carpeta..."
+        try:
+            from plyer import filechooser
+            filechooser.choose_dir(on_selection=self._al_elegir_carpeta_qgis)
+        except Exception as e:
+            _log_debug(f"EXCEPCION al abrir selector de carpeta: {e!r}")
+            self.info.text = f"No se pudo abrir el selector de carpetas: {e}"
+
+    def _al_elegir_carpeta_qgis(self, seleccion):
+        _log_debug(f"Carpeta seleccionada: {seleccion!r}")
+        if not seleccion:
+            def avisar(_dt):
+                self.info.text = "No se seleccionó ninguna carpeta."
+            Clock.schedule_once(avisar, 0)
+            return
+        tree_uri = seleccion[0]
+
+        def procesar(_dt):
+            self.info.text = "Leyendo la carpeta..."
+            try:
+                import android_saf
+                from importar_shapefile import listar_capas_vectoriales_qgs
+
+                archivos = android_saf.listar_archivos_carpeta(tree_uri)
+                _log_debug(f"Archivos encontrados en la carpeta: {[a[0] for a in archivos]}")
+                archivo_qgs = next((a for a in archivos if a[0].lower().endswith(".qgs")), None)
+                if not archivo_qgs:
+                    self.info.text = "No se encontró ningún archivo .qgs en esa carpeta."
+                    return
+
+                carpeta_tmp = os.path.join(ds.data_dir(), "qgis_tmp")
+                os.makedirs(carpeta_tmp, exist_ok=True)
+                ruta_qgs_local = os.path.join(carpeta_tmp, archivo_qgs[0])
+                android_saf.copiar_uri_a_archivo(archivo_qgs[1], ruta_qgs_local)
+
+                capas = listar_capas_vectoriales_qgs(ruta_qgs_local)
+                if not capas:
+                    self.info.text = "El proyecto QGIS no tiene capas vectoriales (shapefile)."
+                    return
+
+                self._archivos_carpeta = archivos
+                self._carpeta_tree_uri = tree_uri
+                self._mostrar_popup_capas(capas)
+            except Exception as e:
+                _log_debug(f"EXCEPCION al procesar carpeta QGIS: {e!r}")
+                self.info.text = f"Error al leer la carpeta: {e}"
+
+        Clock.schedule_once(procesar, 0)
+
+    def _mostrar_popup_capas(self, capas):
+        box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
+        scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
+        scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
+        scroll = ScrollView()
+        scroll.add_widget(scroll_layout)
+        box.add_widget(scroll)
+
+        popup = Popup(title="Elige la capa a importar", content=box, size_hint=(0.9, 0.9))
+
+        for capa in capas:
+            btn = Button(text=capa["nombre"], size_hint_y=None, height=dp(50))
+            btn.bind(on_release=lambda inst, c=capa: (popup.dismiss(), self._importar_capa_elegida(c)))
+            scroll_layout.add_widget(btn)
+
+        b_cancel = Button(text="Cancelar", size_hint_y=None, height=dp(48))
+        b_cancel.bind(on_release=lambda *_: popup.dismiss())
+        box.add_widget(b_cancel)
+        popup.open()
+
+    def _importar_capa_elegida(self, capa):
+        self.info.text = f"Importando capa '{capa['nombre']}'..."
+        try:
+            import android_saf
+
+            nombre_base = capa["archivo_shp"][:-4]  # sin ".shp"
+            extensiones = (".shp", ".shx", ".dbf", ".prj", ".cpg")
+            carpeta_tmp = os.path.join(ds.data_dir(), "qgis_tmp")
+
+            copiados = 0
+            for nombre_archivo, uri_archivo in self._archivos_carpeta:
+                base, ext = os.path.splitext(nombre_archivo)
+                if base == nombre_base and ext.lower() in extensiones:
+                    android_saf.copiar_uri_a_archivo(
+                        uri_archivo, os.path.join(carpeta_tmp, nombre_archivo)
+                    )
+                    copiados += 1
+            _log_debug(f"Copiados {copiados} archivos de la capa '{nombre_base}'")
+
+            from importar_shapefile import leer_puntos_desde_carpeta
+            nuevos = leer_puntos_desde_carpeta(carpeta_tmp, nombre_shp=capa["archivo_shp"])
+            self._fusionar_e_importar(nuevos)
+        except Exception as e:
+            _log_debug(f"EXCEPCION al importar capa elegida: {e!r}")
+            self.info.text = f"Error al importar la capa: {e}"
+
+    def _fusionar_e_importar(self, nuevos):
+        existentes = ds.cargar_puntos()
+        claves_existentes = set()
+        for p in existentes:
+            if p.get("NFijo"):
+                claves_existentes.add(("nfijo", p["NFijo"]))
+            elif p.get("RefCatastral"):
+                claves_existentes.add(("ref", p["RefCatastral"]))
+
+        agregados = 0
+        for p in nuevos:
+            if p.get("NFijo") and ("nfijo", p["NFijo"]) in claves_existentes:
+                continue
+            if p.get("RefCatastral") and ("ref", p["RefCatastral"]) in claves_existentes:
+                continue
+            existentes.append(p)
+            agregados += 1
+        for i, p in enumerate(existentes):
+            p["_id"] = i
+        ds.guardar_puntos(existentes)
+        self.info.text = f"Importados {agregados} puntos nuevos ({len(nuevos)} en la capa)."
 
 
 def _resolver_a_ruta_local(ruta):
