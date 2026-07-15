@@ -180,14 +180,27 @@ class PantallaImportar(Screen):
     def _importar(self, path):
         try:
             if getattr(self, "_tipo_importacion", "csv") == "shapefile":
-                from importar_shapefile import importar_padron_shapefile_zip
-                nuevos = importar_padron_shapefile_zip(path)
+                self._importar_zip_con_capas(path)
             else:
                 nuevos = ds.importar_padron_csv(path)
-            self._fusionar_e_importar(nuevos)
+                self._fusionar_e_importar(nuevos)
         except Exception as e:
             _log_debug(f"EXCEPCION al importar: {e!r}")
             self.info.text = f"Error al importar: {e}"
+
+    def _importar_zip_con_capas(self, ruta_zip):
+        """Si el .zip trae un proyecto .qgs con varias capas, deja elegir
+        cuál importar (igual que en QGIS). Si no, importa el único .shp
+        que encuentre (comportamiento anterior)."""
+        from importar_shapefile import listar_capas_de_zip, leer_puntos_desde_carpeta
+
+        carpeta, capas = listar_capas_de_zip(ruta_zip)
+        if capas:
+            self._carpeta_zip_actual = carpeta
+            self._mostrar_popup_capas(capas, origen="zip")
+        else:
+            nuevos = leer_puntos_desde_carpeta(carpeta)
+            self._fusionar_e_importar(nuevos)
 
     def ir_a_lista(self):
         self.manager.current = "lista"
@@ -244,7 +257,8 @@ class PantallaImportar(Screen):
 
         Clock.schedule_once(procesar, 0)
 
-    def _mostrar_popup_capas(self, capas):
+    def _mostrar_popup_capas(self, capas, origen="carpeta"):
+        self._todas_las_capas_disponibles = capas
         box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
         scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
         scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
@@ -252,17 +266,86 @@ class PantallaImportar(Screen):
         scroll.add_widget(scroll_layout)
         box.add_widget(scroll)
 
-        popup = Popup(title="Elige la capa a importar", content=box, size_hint=(0.9, 0.9))
+        popup = Popup(title="Elige la capa a importar (puntos)", content=box, size_hint=(0.9, 0.9))
+
+        def elegir(inst, c):
+            popup.dismiss()
+            if origen == "zip":
+                self._importar_capa_de_zip_elegida(c)
+            else:
+                self._importar_capa_elegida(c)
 
         for capa in capas:
             btn = Button(text=capa["nombre"], size_hint_y=None, height=dp(50))
-            btn.bind(on_release=lambda inst, c=capa: (popup.dismiss(), self._importar_capa_elegida(c)))
+            btn.bind(on_release=lambda inst, c=capa: elegir(inst, c))
             scroll_layout.add_widget(btn)
 
         b_cancel = Button(text="Cancelar", size_hint_y=None, height=dp(48))
         b_cancel.bind(on_release=lambda *_: popup.dismiss())
         box.add_widget(b_cancel)
         popup.open()
+
+    def _importar_capa_de_zip_elegida(self, capa):
+        self.info.text = f"Importando capa '{capa['nombre']}'..."
+        try:
+            from importar_shapefile import leer_puntos_desde_carpeta
+            nuevos = leer_puntos_desde_carpeta(self._carpeta_zip_actual, nombre_shp=capa["archivo_shp"])
+            self._fusionar_e_importar(nuevos)
+            restantes = [c for c in self._todas_las_capas_disponibles
+                         if c["archivo_shp"] != capa["archivo_shp"]]
+            if restantes:
+                self._mostrar_popup_capas_fondo(restantes, self._carpeta_zip_actual)
+        except Exception as e:
+            _log_debug(f"EXCEPCION al importar capa de zip: {e!r}")
+            self.info.text = f"Error al importar la capa: {e}"
+
+    def _mostrar_popup_capas_fondo(self, capas_restantes, carpeta):
+        """Deja elegir qué otras capas (parcelas, límite, construcciones...)
+        se ven de fondo en el mapa, como referencia visual (no editables)."""
+        box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
+        box.add_widget(Label(
+            text="¿Qué otras capas quieres ver de fondo en el mapa?\n(elige pocas para que el mapa no vaya lento)",
+            size_hint_y=None, height=dp(60)))
+
+        scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
+        scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
+        scroll = ScrollView()
+        scroll.add_widget(scroll_layout)
+        box.add_widget(scroll)
+
+        checks = []
+        for capa in capas_restantes:
+            fila = BoxLayout(size_hint_y=None, height=dp(44))
+            cb = CheckBox(size_hint_x=None, width=dp(44))
+            fila.add_widget(cb)
+            fila.add_widget(Label(text=capa["nombre"]))
+            scroll_layout.add_widget(fila)
+            checks.append((cb, capa))
+
+        popup = Popup(title="Capas de fondo (opcional)", content=box, size_hint=(0.9, 0.9))
+
+        def continuar(*_):
+            elegidas = [capa for cb, capa in checks if cb.active]
+            popup.dismiss()
+            self._cargar_capas_fondo(carpeta, elegidas)
+
+        b_continuar = Button(text="Continuar", size_hint_y=None, height=dp(50))
+        b_continuar.bind(on_release=continuar)
+        box.add_widget(b_continuar)
+        popup.open()
+
+    def _cargar_capas_fondo(self, carpeta, capas_elegidas):
+        if not capas_elegidas:
+            return
+        self.info.text = "Cargando capas de fondo..."
+        try:
+            from importar_shapefile import guardar_capas_fondo
+            ruta_salida = os.path.join(ds.data_dir(), "capas_fondo.json")
+            guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida)
+            self.info.text = "Capas de fondo listas. Ya se verán en el mapa."
+        except Exception as e:
+            _log_debug(f"EXCEPCION al cargar capas de fondo: {e!r}")
+            self.info.text = f"No se pudieron cargar las capas de fondo: {e}"
 
     def _importar_capa_elegida(self, capa):
         self.info.text = f"Importando capa '{capa['nombre']}'..."
@@ -355,6 +438,9 @@ class PantallaLista(Screen):
         b_atras.bind(on_release=lambda *_: setattr(self.manager, "current", "importar"))
         cab.add_widget(b_atras)
         cab.add_widget(Label(text="Puntos pendientes / capturados"))
+        b_mapa = Button(text="Ver mapa", size_hint_x=None, width=dp(100))
+        b_mapa.bind(on_release=lambda *_: setattr(self.manager, "current", "mapa"))
+        cab.add_widget(b_mapa)
         root.add_widget(cab)
 
         self.scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(6))
@@ -623,6 +709,156 @@ class PantallaFicha(Screen):
         self.manager.get_screen("lista").refrescar()
 
 
+# ───────────────────────── PANTALLA: MAPA ─────────────────────────
+
+class PantallaMapa(Screen):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.mapview = None
+        self.capa_fondo_widget = None
+        self.root_box = BoxLayout(orientation="vertical")
+
+        cab = BoxLayout(size_hint_y=None, height=dp(48), padding=(dp(8), 0), spacing=dp(8))
+        b_atras = Button(text="<-", size_hint_x=None, width=dp(48))
+        b_atras.bind(on_release=lambda *_: setattr(self.manager, "current", "lista"))
+        cab.add_widget(b_atras)
+        cab.add_widget(Label(text="Mapa de puntos"))
+        self.root_box.add_widget(cab)
+
+        # El mapa va dentro de un FloatLayout para poder superponer la cruceta
+        # central y el botón de "añadir punto aquí" encima del mapa.
+        from kivy.uix.floatlayout import FloatLayout
+        self.contenedor_mapa = FloatLayout()
+        self.root_box.add_widget(self.contenedor_mapa)
+
+        self.cruceta = Label(text="+", font_size=dp(28), bold=True,
+                              size_hint=(None, None), size=(dp(30), dp(30)),
+                              pos_hint={"center_x": 0.5, "center_y": 0.5})
+        self.contenedor_mapa.add_widget(self.cruceta)
+
+        b_agregar = Button(text="Añadir punto aquí", size_hint=(None, None),
+                            size=(dp(190), dp(50)), pos_hint={"center_x": 0.5, "y": 0.03})
+        b_agregar.bind(on_release=lambda *_: self._agregar_punto_en_centro())
+        self.contenedor_mapa.add_widget(b_agregar)
+
+        self.info = Label(text="", size_hint_y=None, height=dp(28))
+        self.root_box.add_widget(self.info)
+        self.add_widget(self.root_box)
+
+    def on_pre_enter(self):
+        # Quita solo el mapa anterior (mantiene cruceta/botón que ya están añadidos una vez)
+        if self.mapview is not None:
+            self.contenedor_mapa.remove_widget(self.mapview)
+            self.mapview = None
+        try:
+            from kivy_garden.mapview import MapView, MapMarker
+        except Exception as e:
+            _log_debug(f"EXCEPCION al importar mapview: {e!r}")
+            self.info.text = f"No se pudo cargar el mapa: {e}"
+            return
+
+        puntos = [p for p in ds.cargar_puntos() if _coord_valida(p.get("Lat")) and _coord_valida(p.get("Lon"))]
+
+        if puntos:
+            lat_centro = sum(float(p["Lat"]) for p in puntos) / len(puntos)
+            lon_centro = sum(float(p["Lon"]) for p in puntos) / len(puntos)
+        else:
+            lat_centro, lon_centro = 42.9, -3.5  # centro aproximado (Burgos) si no hay puntos aún
+
+        self.mapview = MapView(lat=lat_centro, lon=lon_centro, zoom=16)
+        self.contenedor_mapa.add_widget(self.mapview, index=2)  # detrás de cruceta/botón
+
+        for p in puntos:
+            marcador = MapMarker(lat=float(p["Lat"]), lon=float(p["Lon"]))
+            marcador.bind(on_release=lambda inst, punto=p: self._abrir_ficha(punto))
+            self.mapview.add_marker(marcador)
+
+        self._cargar_capa_de_fondo()
+
+        self.info.text = f"{len(puntos)} puntos con coordenadas de {len(ds.cargar_puntos())} totales."
+
+    def _cargar_capa_de_fondo(self):
+        import json
+        ruta = os.path.join(ds.data_dir(), "capas_fondo.json")
+        if not os.path.exists(ruta):
+            return
+        try:
+            with open(ruta, "r", encoding="utf-8") as f:
+                capas_fondo = json.load(f)
+            if capas_fondo:
+                self.capa_fondo_widget = CapaVectorFondo(capas_fondo)
+                self.mapview.add_layer(self.capa_fondo_widget, mode="window")
+        except Exception as e:
+            _log_debug(f"EXCEPCION al cargar capa de fondo en el mapa: {e!r}")
+
+    def _agregar_punto_en_centro(self):
+        """Crea un punto nuevo en las coordenadas del centro del mapa
+        (donde está la cruceta) y abre su ficha para rellenarlo y tomarle
+        las fotos, igual que al 'digitalizar' en QField."""
+        if not self.mapview:
+            return
+        lat, lon = self.mapview.lat, self.mapview.lon
+        puntos = ds.cargar_puntos()
+        nuevo_id = (max((p["_id"] for p in puntos), default=-1)) + 1
+        nuevo = {c: "" for c in ds.TODOS_CAMPOS}
+        nuevo["_id"] = nuevo_id
+        nuevo["Completado"] = False
+        nuevo["Lat"] = f"{lat:.7f}"
+        nuevo["Lon"] = f"{lon:.7f}"
+        nuevo["CoordGPS"] = f"{lat:.7f}, {lon:.7f}"
+        puntos.append(nuevo)
+        ds.guardar_puntos(puntos)
+        self._abrir_ficha(nuevo)
+
+    def _abrir_ficha(self, punto):
+        pantalla_ficha = self.manager.get_screen("ficha")
+        pantalla_ficha.cargar_punto(punto)
+        self.manager.current = "ficha"
+
+
+class CapaVectorFondo:
+    """Capa de referencia (parcelas, límite, construcciones...) dibujada
+    encima del mapa. Se crea dinámicamente heredando de MapLayer solo
+    cuando kivy_garden.mapview ya está disponible."""
+
+    def __new__(cls, capas_fondo):
+        from kivy_garden.mapview import MapLayer
+        from kivy.graphics import Color, Line
+
+        class _CapaVectorFondoReal(MapLayer):
+            def __init__(self, capas, **kwargs):
+                super().__init__(**kwargs)
+                self.capas = capas
+
+            def reposition(self):
+                mapa = self.parent
+                if mapa is None:
+                    return
+                self.canvas.clear()
+                with self.canvas:
+                    for capa in self.capas:
+                        r, g, b = capa["color"]
+                        Color(r, g, b, 0.85)
+                        cerrado = capa["tipo"] == "polygon"
+                        for anillo in capa["anillos"]:
+                            puntos_xy = []
+                            for lat, lon in anillo:
+                                x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
+                                puntos_xy.extend([x, y])
+                            if len(puntos_xy) >= 4:
+                                Line(points=puntos_xy, width=1.1, close=cerrado)
+
+        return _CapaVectorFondoReal(capas_fondo)
+
+
+def _coord_valida(valor):
+    try:
+        float(valor)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 # ───────────────────────── APP ─────────────────────────
 
 class DigitalizacionAguaApp(App):
@@ -632,6 +868,7 @@ class DigitalizacionAguaApp(App):
         sm.add_widget(PantallaImportar(name="importar"))
         sm.add_widget(PantallaLista(name="lista"))
         sm.add_widget(PantallaFicha(name="ficha"))
+        sm.add_widget(PantallaMapa(name="mapa"))
         return sm
 
 
