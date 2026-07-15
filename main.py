@@ -43,6 +43,17 @@ try:
         _f.write("\n\n=== " + _time.strftime("%Y-%m-%d %H:%M:%S") + " === Arranque de la app iniciado\n")
 except Exception:
     pass
+
+
+def _log_debug(mensaje):
+    """Registra un paso intermedio en debug_log.txt (no hace falta que haya
+    un error para verlo; sirve para rastrear qué ocurre paso a paso)."""
+    try:
+        ruta = _os.path.join(_carpeta_crash_log(), "debug_log.txt")
+        with open(ruta, "a", encoding="utf-8") as f:
+            f.write(_time.strftime("%Y-%m-%d %H:%M:%S") + " - " + str(mensaje) + "\n")
+    except Exception:
+        pass
 # ── FIN CAPTURADOR DE ERRORES ──
 
 import os
@@ -122,22 +133,33 @@ class PantallaImportar(Screen):
         self.info.text = f"Puntos cargados actualmente: {n}"
 
     def abrir_selector(self, *_):
+        _log_debug("Boton 'Importar Padron' pulsado")
+        self.info.text = "Abriendo selector de archivos..."
         try:
             from plyer import filechooser
+            _log_debug("plyer.filechooser importado correctamente, llamando a open_file")
             filechooser.open_file(
                 on_selection=self._al_elegir_archivo,
                 filters=[["Archivos CSV", "*.csv"]],
             )
+            _log_debug("Llamada a open_file() realizada sin excepcion")
         except Exception as e:
+            _log_debug(f"EXCEPCION al abrir selector: {e!r}")
             self.info.text = f"No se pudo abrir el selector de archivos: {e}"
 
     def _al_elegir_archivo(self, seleccion):
+        _log_debug(f"Callback on_selection recibido con: {seleccion!r}")
         if not seleccion:
+            def avisar_vacio(_dt):
+                self.info.text = "No se seleccionó ningún archivo (selección vacía)."
+            Clock.schedule_once(avisar_vacio, 0)
             return
         ruta = seleccion[0]
 
         def hacer_importacion(_dt):
+            _log_debug(f"Resolviendo ruta local para: {ruta!r}")
             ruta_local = _resolver_a_ruta_local(ruta)
+            _log_debug(f"Ruta local resuelta: {ruta_local!r}")
             if ruta_local:
                 self._importar(ruta_local)
             else:
