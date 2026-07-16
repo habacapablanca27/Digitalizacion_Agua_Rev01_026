@@ -123,9 +123,10 @@ class PantallaImportar(Screen):
         btn_importar_shp.bind(on_release=lambda *_: self.abrir_selector("shapefile"))
         root.add_widget(btn_importar_shp)
 
-        btn_importar_qgs = Button(text="Importar capa desde carpeta QGIS (.qgs)", size_hint_y=None, height=dp(56))
-        btn_importar_qgs.bind(on_release=lambda *_: self.abrir_selector_carpeta())
-        root.add_widget(btn_importar_qgs)
+        # El botón de "carpeta QGIS" se quitó temporalmente: usa un mecanismo
+        # de Android (elegir carpeta) que no está respondiendo bien y podía
+        # dejar la app esperando una respuesta que nunca llega. Usa el ZIP
+        # mientras tanto (hace lo mismo, incluida la selección de capas).
 
         btn_continuar = Button(text="Ver puntos cargados", size_hint_y=None, height=dp(56))
         btn_continuar.bind(on_release=lambda *_: self.ir_a_lista())
