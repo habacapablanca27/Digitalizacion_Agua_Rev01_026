@@ -146,37 +146,24 @@ class PantallaImportar(Screen):
         _log_debug(f"Boton 'Importar' pulsado, tipo={tipo}")
         self.info.text = "Abriendo selector de archivos..."
         try:
-            from plyer import filechooser
-            if tipo == "csv":
-                filtros = [["Archivos CSV", "*.csv"]]
-            else:
-                filtros = [["Archivos ZIP", "*.zip"]]
-            _log_debug("plyer.filechooser importado correctamente, llamando a open_file")
-            filechooser.open_file(on_selection=self._al_elegir_archivo, filters=filtros)
-            _log_debug("Llamada a open_file() realizada sin excepcion")
+            from android_filepicker import elegir_archivo
+            _log_debug("android_filepicker importado correctamente, llamando a elegir_archivo")
+            elegir_archivo(self._al_elegir_archivo)
+            _log_debug("Llamada a elegir_archivo() realizada sin excepcion")
         except Exception as e:
             _log_debug(f"EXCEPCION al abrir selector: {e!r}")
             self.info.text = f"No se pudo abrir el selector de archivos: {e}"
 
-    def _al_elegir_archivo(self, seleccion):
-        _log_debug(f"Callback on_selection recibido con: {seleccion!r}")
-        if not seleccion:
-            def avisar_vacio(_dt):
-                self.info.text = "No se seleccionó ningún archivo (selección vacía)."
-            Clock.schedule_once(avisar_vacio, 0)
-            return
-        ruta = seleccion[0]
+    def _al_elegir_archivo(self, ruta_local):
+        _log_debug(f"Callback de seleccion recibido con: {ruta_local!r}")
 
-        def hacer_importacion(_dt):
-            _log_debug(f"Resolviendo ruta local para: {ruta!r}")
-            ruta_local = _resolver_a_ruta_local(ruta)
-            _log_debug(f"Ruta local resuelta: {ruta_local!r}")
-            if ruta_local:
-                self._importar(ruta_local)
-            else:
-                self.info.text = "No se pudo leer el archivo seleccionado."
+        def continuar(_dt):
+            if not ruta_local:
+                self.info.text = "No se seleccionó ningún archivo (selección vacía o cancelada)."
+                return
+            self._importar(ruta_local)
 
-        Clock.schedule_once(hacer_importacion, 0)
+        Clock.schedule_once(continuar, 0)
 
     def _importar(self, path):
         try:
