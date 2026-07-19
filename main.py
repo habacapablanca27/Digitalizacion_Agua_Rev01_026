@@ -704,6 +704,7 @@ class PantallaMapa(Screen):
         super().__init__(**kw)
         self.mapview = None
         self.capa_fondo_widget = None
+        self.capa_marcadores = None
         self.root_box = BoxLayout(orientation="vertical")
 
         cab = BoxLayout(size_hint_y=None, height=dp(48), padding=(dp(8), 0), spacing=dp(8))
@@ -740,6 +741,7 @@ class PantallaMapa(Screen):
             self.mapview = None
         try:
             from kivy_garden.mapview import MapView, MapMarker
+            from kivy_garden.mapview.clustered_marker_layer import ClusteredMarkerLayer
         except Exception as e:
             _log_debug(f"EXCEPCION al importar mapview: {e!r}")
             self.info.text = f"No se pudo cargar el mapa: {e}"
@@ -756,10 +758,24 @@ class PantallaMapa(Screen):
         self.mapview = MapView(lat=lat_centro, lon=lon_centro, zoom=16)
         self.contenedor_mapa.add_widget(self.mapview, index=2)  # detrás de cruceta/botón
 
+        # Antes se añadía un MapMarker por punto (hasta 386 widgets a la vez),
+        # lo que iba muy lento y "robaba" el gesto de pellizco para zoom.
+        # Con ClusteredMarkerLayer, los puntos cercanos se agrupan en una
+        # burbuja con el número de puntos, y solo se crean widgets reales
+        # para lo que cae dentro del recuadro visible en cada nivel de zoom.
+        self.capa_marcadores = ClusteredMarkerLayer(
+            cluster_min_zoom=0,
+            cluster_max_zoom=18,   # a partir de este zoom ya no se agrupan (se ven todos sueltos)
+            cluster_radius="40dp",
+        )
         for p in puntos:
-            marcador = MapMarker(lat=float(p["Lat"]), lon=float(p["Lon"]))
-            marcador.bind(on_release=lambda inst, punto=p: self._abrir_ficha(punto))
-            self.mapview.add_marker(marcador)
+            self.capa_marcadores.add_marker(
+                lon=float(p["Lon"]),
+                lat=float(p["Lat"]),
+                cls=MapMarker,
+                options={"on_release": lambda inst, punto=p: self._abrir_ficha(punto)},
+            )
+        self.mapview.add_layer(self.capa_marcadores, mode="window")
 
         self._cargar_capa_de_fondo()
 
