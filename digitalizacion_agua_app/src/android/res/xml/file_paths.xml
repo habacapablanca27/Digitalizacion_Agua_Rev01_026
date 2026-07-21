@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Expone toda la carpeta interna de datos de la app (getFilesDir()),
-         que es donde Kivy guarda user_data_dir y, dentro, la carpeta
-         "fotos". Se usa path="." (toda la carpeta) en vez de apuntar a
-         una subcarpeta concreta, para no depender del nombre exacto que
-         Kivy le da a esa subcarpeta internamente. -->
-    <files-path name="datos_app" path="." />
-</paths>
