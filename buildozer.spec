@@ -28,14 +28,15 @@ android.accept_sdk_license = True
 android.enable_androidx = True
 android.gradle_dependencies = androidx.core:core:1.12.0
 
-# Declara el <provider> del FileProvider dentro de <application> del
-# manifest (buildozer/p4a no tienen una opcion directa para "provider",
-# por eso se inyecta como XML crudo).
-android.extra_manifest_application_arguments = %(source.dir)s/src/android/extra_manifest_application_arguments.xml
-
 # Copia file_paths.xml (que dice que carpetas puede exponer el FileProvider)
 # a res/xml/ dentro del proyecto Android generado.
 android.add_resources = %(source.dir)s/src/android/res/xml/file_paths.xml:xml/file_paths.xml
+
+# El <provider> del FileProvider se inyecta con un hook de compilacion
+# (ver p4a_hook.py) en vez de con "android.extra_manifest_application_arguments",
+# que resulto poco fiable (genera un AndroidManifest.xml mal formado en
+# algunas versiones de python-for-android).
+p4a.hook = %(source.dir)s/p4a_hook.py
 
 [buildozer]
 log_level = 2
