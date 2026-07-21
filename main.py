@@ -86,6 +86,11 @@ except Exception:
     gps = None
 
 try:
+    import android_camera
+except Exception:
+    android_camera = None
+
+try:
     from android.permissions import request_permissions, Permission
     ANDROID = True
 except Exception:
@@ -634,10 +639,25 @@ class PantallaFicha(Screen):
 
     # -- cámara y GPS --
     def _tomar_foto(self, campo, img_widget):
+        destino = os.path.join(ds.photos_dir(), f"{self.punto['_id']}_{campo}.jpg")
+
+        if ANDROID and android_camera is not None:
+            # Camara propia via FileProvider (ver android_camera.py):
+            # evita el FileUriExposedException que rompia plyer.camera.
+            try:
+                android_camera.tomar_foto(
+                    destino,
+                    lambda path: self._foto_lista(campo, img_widget, path),
+                )
+            except Exception as e:
+                self.estado.text = f"Error de camara: {e}"
+            return
+
+        # Fuera de Android (p.ej. pruebas en escritorio) no hay FileProvider
+        # ni intents nativos: se deja plyer como antes, solo para ese caso.
         if camera is None:
             self.estado.text = "Camara no disponible en este dispositivo/emulador."
             return
-        destino = os.path.join(ds.photos_dir(), f"{self.punto['_id']}_{campo}.jpg")
         try:
             camera.take_picture(filename=destino, on_complete=lambda path: self._foto_lista(campo, img_widget, path))
         except Exception as e:
