@@ -39,7 +39,7 @@ def tomar_foto(destino, on_resultado):
     usuario toma la foto (ya guardada en 'destino') o cancela/falla (None).
     """
     try:
-        from jnius import autoclass
+        from jnius import autoclass, cast
         from android import activity, mActivity
     except Exception as e:
         _log(f"EXCEPCION al importar jnius/android: {e!r}")
@@ -71,7 +71,13 @@ def tomar_foto(destino, on_resultado):
     _log(f"Lanzando ACTION_IMAGE_CAPTURE, request_code={request_code}, destino={destino}")
 
     intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-    intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
+    # Intent.putExtra() tiene muchas variantes sobrecargadas (String,
+    # int, Parcelable, Serializable...) y pyjnius a veces elige mal cual
+    # usar para un Uri. Con cast() se le indica explicitamente que use
+    # la variante que recibe un Parcelable (Uri lo implementa), evitando
+    # el error "Invalid instance of 'android/net/Uri' passed for a ...".
+    Parcelable = autoclass("android.os.Parcelable")
+    intent.putExtra(MediaStore.EXTRA_OUTPUT, cast(Parcelable, uri))
     intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
     intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
