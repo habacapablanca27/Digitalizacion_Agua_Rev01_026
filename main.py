@@ -71,7 +71,7 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.spinner import Spinner
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.popup import Popup
-from kivy.uix.image import Image
+from kivy.uix.image import Image, AsyncImage
 from kivy.metrics import dp
 from kivy.clock import Clock
 
@@ -89,6 +89,11 @@ try:
     import android_camera
 except Exception:
     android_camera = None
+
+try:
+    import android_compartir
+except Exception:
+    android_compartir = None
 
 try:
     from android.permissions import request_permissions, Permission
@@ -451,6 +456,12 @@ class PantallaLista(Screen):
         acciones.add_widget(b_pdf)
         root.add_widget(acciones)
 
+        acciones2 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        b_compartir = Button(text="Compartir PDFs")
+        b_compartir.bind(on_release=self.compartir_pdfs)
+        acciones2.add_widget(b_compartir)
+        root.add_widget(acciones2)
+
         self.estado = Label(text="", size_hint_y=None, height=dp(30))
         root.add_widget(self.estado)
         self.add_widget(root)
@@ -489,7 +500,27 @@ class PantallaLista(Screen):
             return
         carpeta = os.path.join(ds.data_dir(), "fichas_pdf")
         generar_todas_las_fichas(puntos, carpeta)
-        self.estado.text = f"{len(puntos)} fichas PDF generadas en:\n{carpeta}"
+        self._carpeta_pdfs = carpeta
+        self.estado.text = (
+            f"{len(puntos)} fichas PDF generadas. Pulsa 'Compartir PDFs' "
+            f"para guardarlas en Drive, enviarlas por WhatsApp/email, etc."
+        )
+
+    def compartir_pdfs(self, *_):
+        carpeta = getattr(self, "_carpeta_pdfs", None) or os.path.join(ds.data_dir(), "fichas_pdf")
+        if not os.path.isdir(carpeta):
+            self.estado.text = "Todavia no se ha generado ninguna ficha PDF."
+            return
+        rutas = [os.path.join(carpeta, f) for f in os.listdir(carpeta) if f.lower().endswith(".pdf")]
+        if not rutas:
+            self.estado.text = "No hay archivos PDF para compartir."
+            return
+        if ANDROID and android_compartir is not None:
+            ok = android_compartir.compartir_archivos(rutas, titulo="Compartir fichas PDF")
+            if not ok:
+                self.estado.text = "No se pudo abrir el dialogo de compartir."
+        else:
+            self.estado.text = f"Los PDF estan en:\n{carpeta}"
 
 
 # ───────────────────────── PANTALLA: FICHA DE CAMPO ─────────────────────────
@@ -628,7 +659,11 @@ class PantallaFicha(Screen):
 
     def _foto(self, campo, etiqueta):
         cont = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(140), spacing=dp(4))
-        img = Image(size_hint_y=None, height=dp(90))
+        # AsyncImage decodifica la foto en un hilo aparte (Kivy Loader).
+        # Con "Image" normal, una foto de camara a resolucion completa
+        # bloqueaba el hilo principal unos segundos al mostrarla, y la
+        # app parecia congelada (no respondia ni el boton atras).
+        img = AsyncImage(size_hint_y=None, height=dp(90), nocache=True)
         btn = Button(text=f"Foto: {etiqueta}", size_hint_y=None, height=dp(44))
         btn.bind(on_release=lambda *_: self._tomar_foto(campo, img))
         cont.add_widget(img)
