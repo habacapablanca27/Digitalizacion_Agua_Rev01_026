@@ -24,6 +24,33 @@ def photos_dir():
 def puntos_json_path():
     return os.path.join(data_dir(), "puntos.json")
 
+def config_json_path():
+    return os.path.join(data_dir(), "config.json")
+
+
+def cargar_configuracion():
+    """Municipio/núcleo/provincia que se imprimen en la cabecera de las
+    fichas PDF. Se guardan aparte de los puntos porque no cambian punto a
+    punto, sino una vez por importación/zona de trabajo."""
+    path = config_json_path()
+    if not os.path.exists(path):
+        return {"municipio": "", "nucleo": "", "provincia": ""}
+    with open(path, "r", encoding="utf-8") as f:
+        datos = json.load(f)
+    return {
+        "municipio": datos.get("municipio", ""),
+        "nucleo": datos.get("nucleo", ""),
+        "provincia": datos.get("provincia", ""),
+    }
+
+
+def guardar_configuracion(municipio, nucleo, provincia):
+    with open(config_json_path(), "w", encoding="utf-8") as f:
+        json.dump(
+            {"municipio": municipio, "nucleo": nucleo, "provincia": provincia},
+            f, ensure_ascii=False, indent=2,
+        )
+
 # Campos precargados desde el Padrón (solo lectura en la ficha)
 CAMPOS_PADRON = ["NFijo", "Direccion", "NOrden", "CATVia", "RefCatastral", "Lat", "Lon"]
 

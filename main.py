@@ -459,6 +459,9 @@ class PantallaLista(Screen):
         acciones2 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
         b_compartir = Button(text="Compartir PDFs")
         b_compartir.bind(on_release=self.compartir_pdfs)
+        b_config = Button(text="Datos ficha (Ayto./Núcleo)", size_hint_x=None, width=dp(180))
+        b_config.bind(on_release=self.abrir_config_ficha)
+        acciones2.add_widget(b_config)
         acciones2.add_widget(b_compartir)
         root.add_widget(acciones2)
 
@@ -493,13 +496,46 @@ class PantallaLista(Screen):
         carpeta = exportar_shapefile(puntos)
         self.estado.text = f"Shapefile guardado en:\n{carpeta}"
 
+    def abrir_config_ficha(self, *_):
+        cfg = ds.cargar_configuracion()
+        cont = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        cont.add_widget(Label(text="Se imprimen en la cabecera de cada ficha PDF", size_hint_y=None, height=dp(24)))
+
+        cont.add_widget(Label(text="Municipio (Ayuntamiento de...)", size_hint_y=None, height=dp(20)))
+        in_municipio = TextInput(text=cfg["municipio"], multiline=False, size_hint_y=None, height=dp(40))
+        cont.add_widget(in_municipio)
+
+        cont.add_widget(Label(text="Núcleo / localidad", size_hint_y=None, height=dp(20)))
+        in_nucleo = TextInput(text=cfg["nucleo"], multiline=False, size_hint_y=None, height=dp(40))
+        cont.add_widget(in_nucleo)
+
+        cont.add_widget(Label(text="Provincia", size_hint_y=None, height=dp(20)))
+        in_provincia = TextInput(text=cfg["provincia"], multiline=False, size_hint_y=None, height=dp(40))
+        cont.add_widget(in_provincia)
+
+        popup = Popup(title="Datos de la ficha", content=cont, size_hint=(0.85, 0.6))
+
+        def _guardar(*_):
+            ds.guardar_configuracion(in_municipio.text.strip(), in_nucleo.text.strip(), in_provincia.text.strip())
+            self.estado.text = "Datos de ficha guardados."
+            popup.dismiss()
+
+        b_guardar = Button(text="Guardar", size_hint_y=None, height=dp(44))
+        b_guardar.bind(on_release=_guardar)
+        cont.add_widget(b_guardar)
+        popup.open()
+
     def generar_pdfs(self, *_):
         puntos = [p for p in ds.cargar_puntos() if p.get("Completado")]
         if not puntos:
             self.estado.text = "No hay fichas completadas todavia."
             return
+        cfg = ds.cargar_configuracion()
         carpeta = os.path.join(ds.data_dir(), "fichas_pdf")
-        generar_todas_las_fichas(puntos, carpeta)
+        generar_todas_las_fichas(
+            puntos, carpeta,
+            municipio=cfg["municipio"], nucleo=cfg["nucleo"], provincia=cfg["provincia"],
+        )
         self._carpeta_pdfs = carpeta
         self.estado.text = (
             f"{len(puntos)} fichas PDF generadas. Pulsa 'Compartir PDFs' "
@@ -594,7 +630,7 @@ class PantallaFicha(Screen):
         self._texto("MarcaModel", "Marca / Modelo")
         self._texto("Lectura", "Lectura (m³)")
         self._texto("FecLectura", "Fecha lectura",
-                    valor_defecto=datetime.now().strftime("%d/%m/%Y %H:%M"))
+                    valor_defecto=datetime.now().strftime("%d/%m/%Y"))
         self._spinner("Alojamiento", "Alojamiento", ALOJAMIENTOS)
         self._spinner("Calibre", "Calibre", CALIBRES)
         self._spinner("Diametros", "Diámetros", DIAMETROS)
