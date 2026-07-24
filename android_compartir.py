@@ -63,7 +63,14 @@ def compartir_archivos(rutas, titulo="Compartir", tipo_mime="application/pdf"):
         intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, cast("java.util.ArrayList", uris))
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
-        chooser = Intent.createChooser(cast("android.content.Intent", intent), titulo)
+        # Intent.createChooser() tiene 2 versiones sobrecargadas y pyjnius
+        # no reconoce un str de Python normal como "CharSequence" cuando
+        # hay que elegir entre varias (el mismo tipo de fallo que tuvimos
+        # con putExtra() en la camara). Se soluciona creando explicitamente
+        # un java.lang.String real (que SI es un CharSequence valido).
+        JString = autoclass("java.lang.String")
+        titulo_java = JString(titulo)
+        chooser = Intent.createChooser(intent, titulo_java)
         chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         mActivity.startActivity(chooser)
         _log("compartir_archivos: startActivity(chooser) lanzado sin excepciones")
