@@ -29,25 +29,31 @@ def config_json_path():
 
 
 def cargar_configuracion():
-    """Municipio/núcleo/provincia que se imprimen en la cabecera de las
-    fichas PDF. Se guardan aparte de los puntos porque no cambian punto a
-    punto, sino una vez por importación/zona de trabajo."""
+    """Municipio/núcleo/provincia (+ escudo) que se imprimen en la cabecera
+    de las fichas PDF. Se guardan aparte de los puntos porque no cambian
+    punto a punto, sino una vez por importación/zona de trabajo. Vienen de
+    la plantilla Excel que se elige en 'Plantilla a utilizar' (ver
+    plantilla_excel.py)."""
     path = config_json_path()
     if not os.path.exists(path):
-        return {"municipio": "", "nucleo": "", "provincia": ""}
+        return {"municipio": "", "nucleo": "", "provincia": "", "escudo_path": ""}
     with open(path, "r", encoding="utf-8") as f:
         datos = json.load(f)
     return {
         "municipio": datos.get("municipio", ""),
         "nucleo": datos.get("nucleo", ""),
         "provincia": datos.get("provincia", ""),
+        "escudo_path": datos.get("escudo_path", ""),
     }
 
 
-def guardar_configuracion(municipio, nucleo, provincia):
+def guardar_configuracion(municipio, nucleo, provincia, escudo_path=None):
+    actual = cargar_configuracion()
+    if escudo_path is None:
+        escudo_path = actual.get("escudo_path", "")
     with open(config_json_path(), "w", encoding="utf-8") as f:
         json.dump(
-            {"municipio": municipio, "nucleo": nucleo, "provincia": provincia},
+            {"municipio": municipio, "nucleo": nucleo, "provincia": provincia, "escudo_path": escudo_path},
             f, ensure_ascii=False, indent=2,
         )
 
@@ -60,7 +66,7 @@ CAMPOS_CAMPO = [
     "Lectura", "FecLectura", "Alojamiento", "Calibre", "Diametros",
     "TipUsoComu", "Exterior", "Interior", "UbicarExte", "ValAcometi",
     "Individual", "LlaveContador", "CambioTapa", "SeBorra",
-    "CoordGPS", "Observaciones",
+    "Latitud", "Longitud", "Observaciones",
     "FotoSituacion", "FotoInmueble", "FotoContador", "FotoArqueta",
     "Completado",
 ]

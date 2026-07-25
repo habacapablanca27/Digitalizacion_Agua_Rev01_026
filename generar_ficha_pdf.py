@@ -39,8 +39,17 @@ def _solo_fecha(v):
     return v.split(" ")[0] if v else v
 
 
-def generar_ficha_pdf(punto, ruta_salida, municipio="", nucleo="", provincia=""):
-    pdf = SimplePDF(page_w_mm=ANCHO_PAG, page_h_mm=ALTO_PAG)
+def generar_ficha_pdf(punto, ruta_salida=None, municipio="", nucleo="", provincia="", pdf=None, escudo_path=None):
+    """Si se pasa 'pdf' (una instancia de SimplePDF ya creada), dibuja la
+    ficha en la página ACTUAL de ese documento y no lo guarda (lo usa
+    generar_todas_las_fichas para juntar varias fichas en un solo archivo).
+    Si no se pasa 'pdf', crea uno nuevo de una sola página y lo guarda en
+    'ruta_salida' (uso normal para una ficha suelta / pruebas).
+    'escudo_path': ruta al escudo extraído de la plantilla Excel elegida
+    (ver plantilla_excel.py); si no se indica, se usa el genérico."""
+    standalone = pdf is None
+    if standalone:
+        pdf = SimplePDF(page_w_mm=ANCHO_PAG, page_h_mm=ALTO_PAG)
 
     x0 = MARGEN
     y = MARGEN
@@ -52,9 +61,10 @@ def generar_ficha_pdf(punto, ruta_salida, municipio="", nucleo="", provincia="")
     pdf.rect(x0, y, ANCHO, alto_cab)
 
     lado = alto_cab - 4
-    if os.path.exists(ESCUDO):
+    ruta_escudo = escudo_path if (escudo_path and os.path.exists(escudo_path)) else ESCUDO
+    if os.path.exists(ruta_escudo):
         try:
-            pdf.image(ESCUDO, x0 + 2, y + 2, lado, lado)
+            pdf.image(ruta_escudo, x0 + 2, y + 2, lado, lado)
         except Exception:
             pass
 
@@ -107,8 +117,14 @@ def generar_ficha_pdf(punto, ruta_salida, municipio="", nucleo="", provincia="")
         ubicacion.append("Ubicar Exterior")
     ubicacion_txt = ", ".join(ubicacion)
 
-    coord_txt = (punto.get("CoordGPS") or "").strip()
-    coord_lineas = [t.strip() for t in coord_txt.split(",") if t.strip()] if coord_txt else None
+    lat = str(punto.get("Latitud") or "").strip()
+    lon = str(punto.get("Longitud") or "").strip()
+    if lat or lon:
+        coord_lineas = [t for t in (lat, lon) if t]
+    else:
+        # Compatibilidad con puntos capturados antes de separar Latitud/Longitud.
+        coord_txt = (punto.get("CoordGPS") or "").strip()
+        coord_lineas = [t.strip() for t in coord_txt.split(",") if t.strip()] if coord_txt else None
 
     filas_izq = [
         ("Ubicación del Contador", ubicacion_txt, None, 1),
@@ -218,7 +234,8 @@ def generar_ficha_pdf(punto, ruta_salida, municipio="", nucleo="", provincia="")
     # Recuadro grueso envolviendo toda la ficha, igual que en el modelo.
     pdf.rect(x0, MARGEN, ANCHO, y - MARGEN, stroke=True, line_w_pt=1.6)
 
-    pdf.output(ruta_salida)
+    if standalone:
+        pdf.output(ruta_salida)
 
 
 def _celda(pdf, x, y, w, h, titulo, valor, wrap=False, lineas=None, size_pt=8):
@@ -272,12 +289,15 @@ def _caja_foto(pdf, x, y, w, h, etiqueta, ruta_foto, th=6):
                   size_pt=7, color=GRIS, align="C", box_w_mm=w)
 
 
-def generar_todas_las_fichas(puntos, carpeta_salida, municipio="", nucleo="", provincia=""):
-    os.makedirs(carpeta_salida, exist_ok=True)
-    rutas = []
-    for p in puntos:
-        nombre = f"Ficha_{p.get('NFijo') or p.get('_id')}.pdf".replace("/", "-")
-        ruta = os.path.join(carpeta_salida, nombre)
-        generar_ficha_pdf(p, ruta, municipio=municipio, nucleo=nucleo, provincia=provincia)
-        rutas.append(ruta)
-    return rutas
+def generar_todas_las_fichas(puntos, ruta_salida, municipio="", nucleo="", provincia="", escudo_path=None):
+    """Genera UN SOLO archivo PDF con una página por punto (antes generaba
+    un archivo suelto por cada punto). 'ruta_salida' es la ruta completa
+    del archivo .pdf a crear (no una carpeta)."""
+    os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
+    pdf = SimplePDF(page_w_mm=ANCHO_PAG, page_h_mm=ALTO_PAG)
+    for i, p in enumerate(puntos):
+        if i > 0:
+            pdf.nueva_pagina()
+        generar_ficha_pdf(p, municipio=municipio, nucleo=nucleo, provincia=provincia, pdf=pdf, escudo_path=escudo_path)
+    pdf.output(ruta_salida)
+    return ruta_salida

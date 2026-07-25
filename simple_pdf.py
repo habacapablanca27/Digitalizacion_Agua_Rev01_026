@@ -93,6 +93,125 @@ def _escapar_pdf_bytes(texto):
     return bytes(out)
 
 
+import zlib
+
+
+def _leer_png(ruta):
+    """Decodifica un PNG (8 bits por canal, no entrelazado) usando solo
+    'zlib' de la librería estándar. Necesario porque las capturas de
+    pantalla de Android son PNG, y el resto del motor solo sabía incrustar
+    JPEG. Devuelve un dict con los bytes de color (y de transparencia si
+    los hay) listos para volver a comprimir con zlib para el PDF, o None
+    si el PNG no se puede procesar (bit depth raro, entrelazado, etc. —
+    en ese caso, quien llame debe mostrar el aviso de "no se pudo cargar").
+    """
+    with open(ruta, "rb") as f:
+        datos = f.read()
+    if datos[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+
+    ihdr = None
+    paleta = None
+    idat = bytearray()
+    i = 8
+    n = len(datos)
+    while i + 8 <= n:
+        long_chunk = int.from_bytes(datos[i:i + 4], "big")
+        tipo = datos[i + 4:i + 8]
+        cuerpo = datos[i + 8:i + 8 + long_chunk]
+        if tipo == b"IHDR":
+            ancho = int.from_bytes(cuerpo[0:4], "big")
+            alto = int.from_bytes(cuerpo[4:8], "big")
+            bit_depth = cuerpo[8]
+            color_type = cuerpo[9]
+            interlace = cuerpo[12]
+            ihdr = (ancho, alto, bit_depth, color_type, interlace)
+        elif tipo == b"PLTE":
+            paleta = cuerpo
+        elif tipo == b"IDAT":
+            idat.extend(cuerpo)
+        elif tipo == b"IEND":
+            break
+        i += 8 + long_chunk + 4  # + CRC
+
+    if ihdr is None:
+        return None
+    ancho, alto, bit_depth, color_type, interlace = ihdr
+    if bit_depth != 8 or interlace != 0:
+        return None  # caso raro; se deja como "no se pudo cargar"
+    canales_map = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+    if color_type not in canales_map:
+        return None
+    canales = canales_map[color_type]
+
+    try:
+        crudo = zlib.decompress(bytes(idat))
+    except Exception:
+        return None
+
+    stride = ancho * canales
+    bpp = canales
+    pixeles = bytearray(stride * alto)
+    prev = bytearray(stride)
+    pos = 0
+    for fila in range(alto):
+        if pos >= len(crudo):
+            return None
+        tipo_filtro = crudo[pos]
+        pos += 1
+        linea = bytearray(crudo[pos:pos + stride])
+        pos += stride
+        if tipo_filtro == 1:  # Sub
+            for x in range(stride):
+                a = linea[x - bpp] if x >= bpp else 0
+                linea[x] = (linea[x] + a) & 0xFF
+        elif tipo_filtro == 2:  # Up
+            for x in range(stride):
+                linea[x] = (linea[x] + prev[x]) & 0xFF
+        elif tipo_filtro == 3:  # Average
+            for x in range(stride):
+                a = linea[x - bpp] if x >= bpp else 0
+                linea[x] = (linea[x] + ((a + prev[x]) >> 1)) & 0xFF
+        elif tipo_filtro == 4:  # Paeth
+            for x in range(stride):
+                a = linea[x - bpp] if x >= bpp else 0
+                b = prev[x]
+                c = prev[x - bpp] if x >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pred = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                linea[x] = (linea[x] + pred) & 0xFF
+        pixeles[fila * stride:(fila + 1) * stride] = linea
+        prev = linea
+
+    if color_type == 3:  # paleta -> RGB
+        if not paleta:
+            return None
+        rgb = bytearray(ancho * alto * 3)
+        for idx in range(ancho * alto):
+            p = pixeles[idx] * 3
+            rgb[idx * 3:idx * 3 + 3] = paleta[p:p + 3]
+        return {"w": ancho, "h": alto, "ncomp": 3, "color": bytes(rgb), "alpha": None}
+
+    if color_type == 0:  # gris
+        return {"w": ancho, "h": alto, "ncomp": 1, "color": bytes(pixeles), "alpha": None}
+
+    if color_type == 2:  # RGB
+        return {"w": ancho, "h": alto, "ncomp": 3, "color": bytes(pixeles), "alpha": None}
+
+    if color_type in (4, 6):  # con canal alfa: separar color y transparencia
+        canales_color = canales - 1
+        color = bytearray(ancho * alto * canales_color)
+        alpha = bytearray(ancho * alto)
+        for idx in range(ancho * alto):
+            base = idx * canales
+            color[idx * canales_color:(idx + 1) * canales_color] = pixeles[base:base + canales_color]
+            alpha[idx] = pixeles[base + canales_color]
+        return {"w": ancho, "h": alto, "ncomp": canales_color, "color": bytes(color), "alpha": bytes(alpha)}
+
+    return None
+
+
 def _jpeg_info(ruta):
     """Lee cabecera JPEG para obtener (ancho_px, alto_px, n_componentes) sin
     necesitar Pillow ni ninguna otra librería."""
@@ -129,8 +248,19 @@ class SimplePDF:
     def __init__(self, page_w_mm=210, page_h_mm=297):
         self.page_w_pt = page_w_mm * MM
         self.page_h_pt = page_h_mm * MM
-        self.content = bytearray()
-        self._imagenes = []  # lista de dicts: {jpeg_bytes, w_px, h_px, ncomp}
+        self._paginas = []  # lista de dicts: {content: bytearray, imagenes: [...]}
+        self._nueva_pagina_interna()
+
+    def _nueva_pagina_interna(self):
+        pagina = {"content": bytearray(), "imagenes": []}
+        self._paginas.append(pagina)
+        self.content = pagina["content"]
+        self._imagenes = pagina["imagenes"]
+
+    def nueva_pagina(self):
+        """Cierra la página actual y empieza una nueva en blanco dentro del
+        mismo documento (para poder juntar varias fichas en un solo PDF)."""
+        self._nueva_pagina_interna()
 
     # ---- primitivas de dibujo (coordenadas en mm, origen arriba-izquierda) ----
     def set_fill_rgb(self, r, g, b):
@@ -190,16 +320,28 @@ class SimplePDF:
         return y_top_mm + len(lineas) * paso_mm
 
     def image(self, ruta, x_mm, y_mm, w_mm, h_mm):
-        """Incrusta una foto JPEG tal cual (sin recomprimir), centrada y
-        respetando el aspect ratio dentro de la caja x,y,w,h (mm, origen arriba-izq)."""
-        info = _jpeg_info(ruta)
-        if info is None:
-            return False
-        ancho_px, alto_px, ncomp = info
-        if ancho_px == 0 or alto_px == 0:
-            return False
+        """Incrusta una foto (JPEG o PNG) centrada y respetando el aspect
+        ratio dentro de la caja x,y,w,h (mm, origen arriba-izq). El JPEG se
+        incrusta tal cual (sin recomprimir); el PNG se decodifica y se
+        vuelve a comprimir con zlib (ver _leer_png)."""
         with open(ruta, "rb") as f:
-            jpeg_bytes = f.read()
+            cabecera = f.read(8)
+
+        es_png = cabecera == b"\x89PNG\r\n\x1a\n"
+        if es_png:
+            info_png = _leer_png(ruta)
+            if info_png is None:
+                return False
+            ancho_px, alto_px = info_png["w"], info_png["h"]
+        else:
+            info = _jpeg_info(ruta)
+            if info is None:
+                return False
+            ancho_px, alto_px, ncomp = info
+            if ancho_px == 0 or alto_px == 0:
+                return False
+            with open(ruta, "rb") as f:
+                jpeg_bytes = f.read()
 
         aspecto_caja = w_mm / h_mm
         aspecto_img = ancho_px / alto_px
@@ -213,7 +355,14 @@ class SimplePDF:
         off_y = y_mm + (h_mm - draw_h) / 2
 
         idx = len(self._imagenes)
-        self._imagenes.append({"jpeg": jpeg_bytes, "w_px": ancho_px, "h_px": alto_px, "ncomp": ncomp})
+        if es_png:
+            self._imagenes.append({
+                "png": True, "w_px": ancho_px, "h_px": alto_px,
+                "ncomp": info_png["ncomp"], "color": info_png["color"], "alpha": info_png["alpha"],
+            })
+        else:
+            self._imagenes.append({"png": False, "jpeg": jpeg_bytes, "w_px": ancho_px,
+                                    "h_px": alto_px, "ncomp": ncomp})
         nombre = f"/Im{idx}"
 
         x_pt = off_x * MM
@@ -236,49 +385,109 @@ class SimplePDF:
             offsets.append(len(buf))
             buf.extend(cuerpo_bytes)
 
-        # 1 Catalog, 2 Pages, 3 Page, 4 Content, 5 Font Helvetica, 6 Font Helvetica-Bold
+        n_paginas = len(self._paginas)
+
+        # Plan de numeración de objetos (antes de escribir nada), porque los
+        # objetos "Pages" y "Page" necesitan referenciar objetos que se
+        # escriben más adelante en el archivo:
+        #   1 Catalog, 2 Pages
+        #   por cada página: 1 objeto Page + 1 objeto Content + N imágenes
+        #     (una imagen PNG con transparencia ocupa 2 objetos: color + máscara alfa)
+        #   al final: 2 objetos de fuente (compartidos por todas las páginas)
+        pagina_obj = []
+        content_obj = []
+        imagenes_obj = []  # lista de listas [(obj_color, obj_alpha_o_None), ...] por página
+        siguiente = 3
+        for pagina in self._paginas:
+            pagina_obj.append(siguiente)
+            content_obj.append(siguiente + 1)
+            siguiente += 2
+            objs_pagina = []
+            for img in pagina["imagenes"]:
+                tiene_alpha = img.get("png") and img.get("alpha") is not None
+                if tiene_alpha:
+                    objs_pagina.append((siguiente, siguiente + 1))
+                    siguiente += 2
+                else:
+                    objs_pagina.append((siguiente, None))
+                    siguiente += 1
+            imagenes_obj.append(objs_pagina)
+        font1_obj = siguiente
+        font2_obj = siguiente + 1
+
         add_obj(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
-        add_obj(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
-
-        xobjects = "".join(
-            f"/Im{i} {7 + i} 0 R " for i in range(len(self._imagenes))
-        )
-        recursos = (
-            f"<< /Font << /F1 5 0 R /F2 6 0 R >> "
-            f"/XObject << {xobjects}>> >>"
-        )
-        page_obj = (
-            f"3 0 obj\n<< /Type /Page /Parent 2 0 R "
-            f"/MediaBox [0 0 {self.page_w_pt:.2f} {self.page_h_pt:.2f}] "
-            f"/Resources {recursos} /Contents 4 0 R >>\nendobj\n"
-        ).encode()
-        add_obj(page_obj)
-
-        contenido = bytes(self.content)
+        kids = " ".join(f"{n} 0 R" for n in pagina_obj)
         add_obj(
-            f"4 0 obj\n<< /Length {len(contenido)} >>\nstream\n".encode()
-            + contenido + b"\nendstream\nendobj\n"
-        )
-        add_obj(
-            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-            b"/Encoding /WinAnsiEncoding >>\nendobj\n"
-        )
-        add_obj(
-            b"6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
-            b"/Encoding /WinAnsiEncoding >>\nendobj\n"
+            f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {n_paginas} >>\nendobj\n".encode()
         )
 
-        for idx, img in enumerate(self._imagenes):
-            colorspace = "DeviceGray" if img["ncomp"] == 1 else "DeviceRGB"
-            cabecera = (
-                f"/Type /XObject /Subtype /Image /Width {img['w_px']} /Height {img['h_px']} "
-                f"/ColorSpace /{colorspace} /BitsPerComponent 8 /Filter /DCTDecode "
-                f"/Length {len(img['jpeg'])}"
+        for i, pagina in enumerate(self._paginas):
+            xobjects = "".join(
+                f"/Im{j} {imagenes_obj[i][j][0]} 0 R " for j in range(len(pagina["imagenes"]))
             )
+            recursos = (
+                f"<< /Font << /F1 {font1_obj} 0 R /F2 {font2_obj} 0 R >> "
+                f"/XObject << {xobjects}>> >>"
+            )
+            page_bytes = (
+                f"{pagina_obj[i]} 0 obj\n<< /Type /Page /Parent 2 0 R "
+                f"/MediaBox [0 0 {self.page_w_pt:.2f} {self.page_h_pt:.2f}] "
+                f"/Resources {recursos} /Contents {content_obj[i]} 0 R >>\nendobj\n"
+            ).encode()
+            add_obj(page_bytes)
+
+            contenido = bytes(pagina["content"])
             add_obj(
-                f"{7 + idx} 0 obj\n<< {cabecera} >>\nstream\n".encode()
-                + img["jpeg"] + b"\nendstream\nendobj\n"
+                f"{content_obj[i]} 0 obj\n<< /Length {len(contenido)} >>\nstream\n".encode()
+                + contenido + b"\nendstream\nendobj\n"
             )
+
+            for j, img in enumerate(pagina["imagenes"]):
+                obj_color, obj_alpha = imagenes_obj[i][j]
+                colorspace = "DeviceGray" if img["ncomp"] == 1 else "DeviceRGB"
+
+                if img.get("png"):
+                    datos_color = zlib.compress(img["color"])
+                    smask_ref = f" /SMask {obj_alpha} 0 R" if obj_alpha else ""
+                    cabecera = (
+                        f"/Type /XObject /Subtype /Image /Width {img['w_px']} /Height {img['h_px']} "
+                        f"/ColorSpace /{colorspace} /BitsPerComponent 8 /Filter /FlateDecode"
+                        f"{smask_ref} /Length {len(datos_color)}"
+                    )
+                    add_obj(
+                        f"{obj_color} 0 obj\n<< {cabecera} >>\nstream\n".encode()
+                        + datos_color + b"\nendstream\nendobj\n"
+                    )
+                    if obj_alpha:
+                        datos_alpha = zlib.compress(img["alpha"])
+                        cab_alpha = (
+                            f"/Type /XObject /Subtype /Image /Width {img['w_px']} /Height {img['h_px']} "
+                            f"/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode "
+                            f"/Length {len(datos_alpha)}"
+                        )
+                        add_obj(
+                            f"{obj_alpha} 0 obj\n<< {cab_alpha} >>\nstream\n".encode()
+                            + datos_alpha + b"\nendstream\nendobj\n"
+                        )
+                else:
+                    cabecera = (
+                        f"/Type /XObject /Subtype /Image /Width {img['w_px']} /Height {img['h_px']} "
+                        f"/ColorSpace /{colorspace} /BitsPerComponent 8 /Filter /DCTDecode "
+                        f"/Length {len(img['jpeg'])}"
+                    )
+                    add_obj(
+                        f"{obj_color} 0 obj\n<< {cabecera} >>\nstream\n".encode()
+                        + img["jpeg"] + b"\nendstream\nendobj\n"
+                    )
+
+        add_obj(
+            f"{font1_obj} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+            f"/Encoding /WinAnsiEncoding >>\nendobj\n".encode()
+        )
+        add_obj(
+            f"{font2_obj} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
+            f"/Encoding /WinAnsiEncoding >>\nendobj\n".encode()
+        )
 
         n_objs = len(offsets) - 1
         xref_offset = len(buf)

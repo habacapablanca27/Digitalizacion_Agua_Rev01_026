@@ -58,6 +58,7 @@ def _log_debug(mensaje):
 
 import os
 import shutil
+import copy
 from datetime import datetime
 
 from kivy.app import App
@@ -94,6 +95,21 @@ try:
     import android_compartir
 except Exception:
     android_compartir = None
+
+try:
+    import android_adjuntar
+except Exception:
+    android_adjuntar = None
+
+try:
+    import android_filepicker
+except Exception:
+    android_filepicker = None
+
+try:
+    from plantilla_excel import leer_plantilla_excel
+except Exception:
+    leer_plantilla_excel = None
 
 try:
     from android.permissions import request_permissions, Permission
@@ -459,7 +475,7 @@ class PantallaLista(Screen):
         acciones2 = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
         b_compartir = Button(text="Compartir PDFs")
         b_compartir.bind(on_release=self.compartir_pdfs)
-        b_config = Button(text="Datos ficha (Ayto./Núcleo)", size_hint_x=None, width=dp(180))
+        b_config = Button(text="Plantilla a utilizar", size_hint_x=None, width=dp(180))
         b_config.bind(on_release=self.abrir_config_ficha)
         acciones2.add_widget(b_config)
         acciones2.add_widget(b_compartir)
@@ -499,7 +515,14 @@ class PantallaLista(Screen):
     def abrir_config_ficha(self, *_):
         cfg = ds.cargar_configuracion()
         cont = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
-        cont.add_widget(Label(text="Se imprimen en la cabecera de cada ficha PDF", size_hint_y=None, height=dp(24)))
+        cont.add_widget(Label(
+            text="Elige el Excel modelo ya preparado (con el escudo/nombre\n"
+                 "de tu municipio) y se rellena todo solo.",
+            size_hint_y=None, height=dp(44),
+        ))
+
+        b_elegir = Button(text="Elegir plantilla Excel…", size_hint_y=None, height=dp(44))
+        cont.add_widget(b_elegir)
 
         cont.add_widget(Label(text="Municipio (Ayuntamiento de...)", size_hint_y=None, height=dp(20)))
         in_municipio = TextInput(text=cfg["municipio"], multiline=False, size_hint_y=None, height=dp(40))
@@ -513,10 +536,52 @@ class PantallaLista(Screen):
         in_provincia = TextInput(text=cfg["provincia"], multiline=False, size_hint_y=None, height=dp(40))
         cont.add_widget(in_provincia)
 
-        popup = Popup(title="Datos de la ficha", content=cont, size_hint=(0.85, 0.6))
+        escudo_pendiente = {"ruta": cfg.get("escudo_path", "")}
+
+        popup = Popup(title="Plantilla a utilizar", content=cont, size_hint=(0.9, 0.8))
+
+        def _tras_elegir_archivo(ruta):
+            if not ruta:
+                self.estado.text = "No se eligio ningun archivo."
+                return
+            if leer_plantilla_excel is None:
+                self.estado.text = "Falta soporte de Excel en esta build (openpyxl)."
+                return
+            try:
+                datos = leer_plantilla_excel(ruta)
+            except Exception as e:
+                self.estado.text = f"No se pudo leer el Excel: {e}"
+                return
+
+            def actualizar(_dt):
+                if datos["municipio"]:
+                    in_municipio.text = datos["municipio"]
+                if datos["nucleo"]:
+                    in_nucleo.text = datos["nucleo"]
+                if datos["provincia"]:
+                    in_provincia.text = datos["provincia"]
+                if datos["escudo_bytes"]:
+                    ruta_escudo = os.path.join(ds.data_dir(), "plantilla_escudo." + datos["escudo_ext"])
+                    with open(ruta_escudo, "wb") as f:
+                        f.write(datos["escudo_bytes"])
+                    escudo_pendiente["ruta"] = ruta_escudo
+                self.estado.text = "Plantilla leida. Revisa los datos y pulsa Guardar."
+            Clock.schedule_once(actualizar, 0)
+
+        def _elegir_archivo(*_):
+            if not (ANDROID and android_filepicker is not None):
+                self.estado.text = "Elegir archivo solo esta disponible en el movil."
+                return
+            tipos = ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+            android_filepicker.elegir_archivo(_tras_elegir_archivo, tipos_mime=tipos)
+
+        b_elegir.bind(on_release=_elegir_archivo)
 
         def _guardar(*_):
-            ds.guardar_configuracion(in_municipio.text.strip(), in_nucleo.text.strip(), in_provincia.text.strip())
+            ds.guardar_configuracion(
+                in_municipio.text.strip(), in_nucleo.text.strip(), in_provincia.text.strip(),
+                escudo_path=escudo_pendiente["ruta"],
+            )
             self.estado.text = "Datos de ficha guardados."
             popup.dismiss()
 
@@ -531,32 +596,29 @@ class PantallaLista(Screen):
             self.estado.text = "No hay fichas completadas todavia."
             return
         cfg = ds.cargar_configuracion()
-        carpeta = os.path.join(ds.data_dir(), "fichas_pdf")
+        ruta_pdf = os.path.join(ds.data_dir(), "fichas_pdf", "Fichas_Medidores.pdf")
         generar_todas_las_fichas(
-            puntos, carpeta,
+            puntos, ruta_pdf,
             municipio=cfg["municipio"], nucleo=cfg["nucleo"], provincia=cfg["provincia"],
+            escudo_path=cfg.get("escudo_path") or None,
         )
-        self._carpeta_pdfs = carpeta
+        self._ruta_pdf = ruta_pdf
         self.estado.text = (
-            f"{len(puntos)} fichas PDF generadas. Pulsa 'Compartir PDFs' "
-            f"para guardarlas en Drive, enviarlas por WhatsApp/email, etc."
+            f"{len(puntos)} fichas generadas en un solo PDF. Pulsa 'Compartir PDFs' "
+            f"para guardarlo en Drive, enviarlo por WhatsApp/email, etc."
         )
 
     def compartir_pdfs(self, *_):
-        carpeta = getattr(self, "_carpeta_pdfs", None) or os.path.join(ds.data_dir(), "fichas_pdf")
-        if not os.path.isdir(carpeta):
-            self.estado.text = "Todavia no se ha generado ninguna ficha PDF."
-            return
-        rutas = [os.path.join(carpeta, f) for f in os.listdir(carpeta) if f.lower().endswith(".pdf")]
-        if not rutas:
-            self.estado.text = "No hay archivos PDF para compartir."
+        ruta_pdf = getattr(self, "_ruta_pdf", None) or os.path.join(ds.data_dir(), "fichas_pdf", "Fichas_Medidores.pdf")
+        if not os.path.exists(ruta_pdf):
+            self.estado.text = "Todavia no se ha generado el PDF de fichas."
             return
         if ANDROID and android_compartir is not None:
-            ok = android_compartir.compartir_archivos(rutas, titulo="Compartir fichas PDF")
+            ok = android_compartir.compartir_archivos([ruta_pdf], titulo="Compartir fichas PDF")
             if not ok:
                 self.estado.text = "No se pudo abrir el dialogo de compartir."
         else:
-            self.estado.text = f"Los PDF estan en:\n{carpeta}"
+            self.estado.text = f"El PDF esta en:\n{ruta_pdf}"
 
 
 # ───────────────────────── PANTALLA: FICHA DE CAMPO ─────────────────────────
@@ -607,12 +669,19 @@ class PantallaFicha(Screen):
         acciones.add_widget(b_guardar)
         root.add_widget(acciones)
 
+        acciones2 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8), padding=(dp(8), 0))
+        b_salir = Button(text="Salir sin guardar")
+        b_salir.bind(on_release=self.salir_sin_guardar)
+        acciones2.add_widget(b_salir)
+        root.add_widget(acciones2)
+
         self.estado = Label(text="", size_hint_y=None, height=dp(24))
         root.add_widget(self.estado)
         self.add_widget(root)
 
     def cargar_punto(self, punto):
         self.punto = punto
+        self._punto_original = copy.deepcopy(punto)
         self.titulo.text = f"{punto.get('NFijo','')} — {punto.get('Direccion','')}"
         self.form.clear_widgets()
         self.inputs = {}
@@ -645,7 +714,10 @@ class PantallaFicha(Screen):
         self._checkbox("CambioTapa", "Cambio de tapa")
         self._checkbox("SeBorra", "Se borra")
 
-        self._texto("CoordGPS", "Coordenadas GPS (o pulsa Capturar GPS)")
+        lat_inicial = str(punto.get("Latitud") or punto.get("Lat") or "")
+        lon_inicial = str(punto.get("Longitud") or punto.get("Lon") or "")
+        self._texto("Latitud", "Latitud (o pulsa Capturar GPS)", valor_defecto=lat_inicial)
+        self._texto("Longitud", "Longitud", valor_defecto=lon_inicial)
         self._texto("Observaciones", "Observaciones")
 
         self.form.add_widget(Label(text="Fotografías", size_hint_y=None, height=dp(34)))
@@ -694,19 +766,65 @@ class PantallaFicha(Screen):
         self.form.add_widget(box)
 
     def _foto(self, campo, etiqueta):
-        cont = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(140), spacing=dp(4))
+        cont = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(150), spacing=dp(4))
         # AsyncImage decodifica la foto en un hilo aparte (Kivy Loader).
         # Con "Image" normal, una foto de camara a resolucion completa
         # bloqueaba el hilo principal unos segundos al mostrarla, y la
         # app parecia congelada (no respondia ni el boton atras).
         img = AsyncImage(size_hint_y=None, height=dp(90), nocache=True)
-        btn = Button(text=f"Foto: {etiqueta}", size_hint_y=None, height=dp(44))
-        btn.bind(on_release=lambda *_: self._tomar_foto(campo, img))
+
+        # Si el punto ya tenia una foto guardada de antes (p.ej. al volver
+        # a entrar en una ficha ya rellenada), se muestra directamente.
+        # Antes esto no pasaba: el recuadro se creaba siempre en blanco y
+        # solo se rellenaba justo despues de tomar una foto NUEVA.
+        ruta_existente = self.punto.get(campo) if self.punto else None
+        if ruta_existente and os.path.exists(ruta_existente):
+            img.source = ruta_existente
+
+        fila_botones = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
+        btn_camara = Button(text=f"Cámara: {etiqueta}")
+        btn_camara.bind(on_release=lambda *_: self._tomar_foto(campo, img))
+        btn_menu = Button(text="···", size_hint_x=None, width=dp(44))
+        btn_menu.bind(on_release=lambda *_: self._abrir_menu_adjuntar(campo, img))
+        fila_botones.add_widget(btn_camara)
+        fila_botones.add_widget(btn_menu)
+
         cont.add_widget(img)
-        cont.add_widget(btn)
+        cont.add_widget(fila_botones)
         self.foto_widgets[campo] = img
-        self.form.add_widget(Label(text="", size_hint_y=None, height=dp(140)))
+        self.form.add_widget(Label(text="", size_hint_y=None, height=dp(150)))
         self.form.add_widget(cont)
+
+    def _abrir_menu_adjuntar(self, campo, img_widget):
+        cont = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        popup = Popup(title="Adjuntar foto", content=cont, size_hint=(0.85, 0.35))
+
+        b1 = Button(text="Adjuntar un archivo")
+        b2 = Button(text="Adjuntar de la galería")
+
+        def _elegir(modo):
+            popup.dismiss()
+            self._adjuntar(campo, img_widget, modo)
+
+        b1.bind(on_release=lambda *_: _elegir("archivo"))
+        b2.bind(on_release=lambda *_: _elegir("galeria"))
+        cont.add_widget(b1)
+        cont.add_widget(b2)
+        popup.open()
+
+    def _adjuntar(self, campo, img_widget, modo):
+        if not (ANDROID and android_adjuntar is not None):
+            self.estado.text = "Adjuntar archivos solo esta disponible en el movil."
+            return
+        destino = os.path.join(ds.photos_dir(), f"{self.punto['_id']}_{campo}.jpg")
+        callback = lambda path: self._foto_lista(campo, img_widget, path)
+        try:
+            if modo == "archivo":
+                android_adjuntar.adjuntar_archivo(destino, callback)
+            else:
+                android_adjuntar.adjuntar_galeria(destino, callback)
+        except Exception as e:
+            self.estado.text = f"Error al adjuntar: {e}"
 
     # -- cámara y GPS --
     def _tomar_foto(self, campo, img_widget):
@@ -740,7 +858,12 @@ class PantallaFicha(Screen):
                 self.punto[campo] = path
                 img_widget.source = path
                 img_widget.reload()
-                self.estado.text = f"Foto {campo} capturada."
+                # Se guarda YA (no se espera a pulsar "Guardar"): si tomas
+                # una foto y sales sin guardar el resto del formulario, la
+                # foto no se pierde. "Salir sin guardar" revierte esto si
+                # hace falta (ver salir_sin_guardar).
+                ds.actualizar_punto(self.punto)
+                self.estado.text = f"Foto {campo} guardada."
             else:
                 self.estado.text = "No se recibio la foto (cancelada)."
         Clock.schedule_once(actualizar, 0)
@@ -761,7 +884,8 @@ class PantallaFicha(Screen):
         lon = kwargs.get("lon")
         if lat is not None and lon is not None:
             def actualizar(_dt):
-                self.inputs["CoordGPS"].text = f"{lat}, {lon}"
+                self.inputs["Latitud"].text = f"{lat}"
+                self.inputs["Longitud"].text = f"{lon}"
                 self.estado.text = "GPS capturado."
             Clock.schedule_once(actualizar, 0)
             try:
@@ -786,6 +910,15 @@ class PantallaFicha(Screen):
     def volver(self, *_):
         self.manager.current = "lista"
         self.manager.get_screen("lista").refrescar()
+
+    def salir_sin_guardar(self, *_):
+        # Revierte el punto a como estaba justo al abrir la ficha. Como las
+        # fotos se guardan al momento de tomarlas (ver _foto_lista), esto
+        # tambien deshace fotos tomadas/adjuntadas durante esta sesion si
+        # no se pulso "Guardar".
+        if self.punto and getattr(self, "_punto_original", None) is not None:
+            ds.actualizar_punto(self._punto_original)
+        self.volver()
 
 
 # ───────────────────────── PANTALLA: MAPA ─────────────────────────
@@ -900,7 +1033,8 @@ class PantallaMapa(Screen):
         nuevo["Completado"] = False
         nuevo["Lat"] = f"{lat:.7f}"
         nuevo["Lon"] = f"{lon:.7f}"
-        nuevo["CoordGPS"] = f"{lat:.7f}, {lon:.7f}"
+        nuevo["Latitud"] = f"{lat:.7f}"
+        nuevo["Longitud"] = f"{lon:.7f}"
         puntos.append(nuevo)
         ds.guardar_puntos(puntos)
         self._abrir_ficha(nuevo)

@@ -41,7 +41,12 @@ def exportar_shapefile(puntos, nombre_salida="digitalizacion_agua"):
             lat = _to_float(p.get("Lat"))
             lon = _to_float(p.get("Lon"))
             if lat is None or lon is None:
-                # Si no hay coordenada precargada, usamos la del GPS capturado en campo
+                # Si no hay coordenada precargada, usamos la capturada en campo
+                lat = _to_float(p.get("Latitud"))
+                lon = _to_float(p.get("Longitud"))
+            if lat is None or lon is None:
+                # Compatibilidad con puntos capturados antes de separar
+                # Latitud/Longitud en dos campos.
                 lat, lon = _parse_coord_gps(p.get("CoordGPS"))
             if lat is None or lon is None:
                 continue  # sin geometría no se puede escribir el punto
