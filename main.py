@@ -332,7 +332,14 @@ class PantallaImportar(Screen):
             fila = BoxLayout(size_hint_y=None, height=dp(44))
             cb = CheckBox(size_hint_x=None, width=dp(44))
             fila.add_widget(cb)
-            fila.add_widget(Label(text=capa["nombre"]))
+            # Con nombres de capa largos, un Label sin limite de ancho se
+            # dibuja centrado en su hueco y se desborda tapando el propio
+            # checkbox. Con text_size fijado al ancho real de la fila (y
+            # "shorten" para acortar con "…" si aun asi no cabe), el
+            # texto queda siempre DESPUES del checkbox y legible.
+            lbl = Label(text=capa["nombre"], halign="left", valign="middle", shorten=True, shorten_from="right")
+            lbl.bind(size=lambda inst, tam: setattr(inst, "text_size", tam))
+            fila.add_widget(lbl)
             scroll_layout.add_widget(fila)
             checks.append((cb, capa))
 
@@ -343,9 +350,17 @@ class PantallaImportar(Screen):
             popup.dismiss()
             self._cargar_capas_fondo(carpeta, elegidas)
 
-        b_continuar = Button(text="Continuar", size_hint_y=None, height=dp(50))
+        def cancelar(*_):
+            popup.dismiss()
+
+        fila_botones = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        b_cancelar = Button(text="Cancelar")
+        b_cancelar.bind(on_release=cancelar)
+        b_continuar = Button(text="Continuar")
         b_continuar.bind(on_release=continuar)
-        box.add_widget(b_continuar)
+        fila_botones.add_widget(b_cancelar)
+        fila_botones.add_widget(b_continuar)
+        box.add_widget(fila_botones)
         popup.open()
 
     def _cargar_capas_fondo(self, carpeta, capas_elegidas):
@@ -967,12 +982,32 @@ class PantallaMapa(Screen):
             self.contenedor_mapa.remove_widget(self.mapview)
             self.mapview = None
         try:
-            from kivy_garden.mapview import MapView, MapMarker
+            from kivy_garden.mapview import MapView, MapMarker, MapSource
             from kivy_garden.mapview.clustered_marker_layer import ClusteredMarkerLayer
         except Exception as e:
             _log_debug(f"EXCEPCION al importar mapview: {e!r}")
             self.info.text = f"No se pudo cargar el mapa: {e}"
             return
+
+        # Fuentes de mapa disponibles (como el selector de "Mapas" de
+        # QField). OSM es el callejero de siempre; PNOA son las
+        # ortofotos aéreas oficiales del Instituto Geográfico Nacional
+        # (gratuitas y de uso público, pensadas para esto). No incluimos
+        # "Google Maps"/"Bing" como en QField porque esos necesitan una
+        # clave de API de pago; si más adelante quieres integrarlos con
+        # tu propia clave, se puede añadir igual que estas.
+        self.fuentes_mapa = {
+            "Calles (OpenStreetMap)": MapSource(),
+            "Satélite (PNOA - IGN)": MapSource(
+                url="https://www.ign.es/wmts/pnoa-ma?service=WMTS&request=GetTile&version=1.0.0"
+                    "&layer=OI.OrthoimageCoverage&style=default&format=image/jpeg"
+                    "&tilematrixset=GoogleMapsCompatible&tilematrix={z}&tilerow={y}&tilecol={x}",
+                min_zoom=0, max_zoom=19, image_ext="jpeg",
+                attribution="PNOA cedido por © Instituto Geográfico Nacional de España",
+            ),
+        }
+        fuente_guardada = getattr(self, "_nombre_fuente_actual", "Calles (OpenStreetMap)")
+        fuente_inicial = self.fuentes_mapa.get(fuente_guardada, self.fuentes_mapa["Calles (OpenStreetMap)"])
 
         puntos = [p for p in ds.cargar_puntos() if _coord_valida(p.get("Lat")) and _coord_valida(p.get("Lon"))]
 
@@ -982,7 +1017,7 @@ class PantallaMapa(Screen):
         else:
             lat_centro, lon_centro = 42.9, -3.5  # centro aproximado (Burgos) si no hay puntos aún
 
-        self.mapview = MapView(lat=lat_centro, lon=lon_centro, zoom=16)
+        self.mapview = MapView(lat=lat_centro, lon=lon_centro, zoom=16, map_source=fuente_inicial)
         self.contenedor_mapa.add_widget(self.mapview, index=2)  # detrás de cruceta/botón
 
         # Antes se añadía un MapMarker por punto (hasta 386 widgets a la vez),
@@ -1023,10 +1058,6 @@ class PantallaMapa(Screen):
             _log_debug(f"EXCEPCION al cargar capa de fondo en el mapa: {e!r}")
 
     def _abrir_panel_capas(self, *_):
-        if not self.capa_fondo_widget or not getattr(self.capa_fondo_widget, "capas", None):
-            self.info.text = "No hay capas de fondo cargadas (impórtalas al traer el Shapefile)."
-            return
-
         cont = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(6))
         scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
         scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
@@ -1034,28 +1065,39 @@ class PantallaMapa(Screen):
         scroll.add_widget(scroll_layout)
         cont.add_widget(scroll)
 
-        popup = Popup(title="Capas de fondo", content=cont, size_hint=(0.85, 0.7))
+        popup = Popup(title="Capas", content=cont, size_hint=(0.85, 0.75))
 
-        def _on_toggle(capa, valor):
-            capa["activa"] = valor
-            if self.capa_fondo_widget is not None:
-                self.capa_fondo_widget.reposition()
+        # ── Mapa base (calles / satélite) ──
+        scroll_layout.add_widget(Label(text="Mapa base", bold=True, size_hint_y=None, height=dp(28)))
 
-        for capa in self.capa_fondo_widget.capas:
-            fila = BoxLayout(size_hint_y=None, height=dp(44))
-            cb = CheckBox(active=capa.get("activa", True), size_hint_x=None, width=dp(44))
-            cb.bind(active=lambda inst, valor, c=capa: _on_toggle(c, valor))
-            fila.add_widget(cb)
-            # Antes el texto no tenia limite de ancho: con nombres de capa
-            # largos, Kivy dibujaba el texto centrado en su hueco y se
-            # desbordaba tapando el propio checkbox. Con text_size fijado
-            # al ancho real de la fila (y "shorten" para acortar con "…"
-            # si aun asi no cabe), el texto queda siempre DESPUES del
-            # checkbox y legible.
-            lbl = Label(text=capa["nombre"], halign="left", valign="middle", shorten=True, shorten_from="right")
-            lbl.bind(size=lambda inst, tam: setattr(inst, "text_size", tam))
-            fila.add_widget(lbl)
-            scroll_layout.add_widget(fila)
+        def _cambiar_fuente(nombre_fuente, *_):
+            self._nombre_fuente_actual = nombre_fuente
+            if self.mapview is not None:
+                self.mapview.map_source = self.fuentes_mapa[nombre_fuente]
+
+        for nombre_fuente in self.fuentes_mapa:
+            b = Button(text=nombre_fuente, size_hint_y=None, height=dp(44))
+            b.bind(on_release=lambda inst, n=nombre_fuente: _cambiar_fuente(n))
+            scroll_layout.add_widget(b)
+
+        # ── Capas de fondo (parcelas, límites, construcciones...) ──
+        if self.capa_fondo_widget and getattr(self.capa_fondo_widget, "capas", None):
+            scroll_layout.add_widget(Label(text="Capas de fondo", bold=True, size_hint_y=None, height=dp(28)))
+
+            def _on_toggle(capa, valor):
+                capa["activa"] = valor
+                if self.capa_fondo_widget is not None:
+                    self.capa_fondo_widget.reposition()
+
+            for capa in self.capa_fondo_widget.capas:
+                fila = BoxLayout(size_hint_y=None, height=dp(44))
+                cb = CheckBox(active=capa.get("activa", True), size_hint_x=None, width=dp(44))
+                cb.bind(active=lambda inst, valor, c=capa: _on_toggle(c, valor))
+                fila.add_widget(cb)
+                lbl = Label(text=capa["nombre"], halign="left", valign="middle", shorten=True, shorten_from="right")
+                lbl.bind(size=lambda inst, tam: setattr(inst, "text_size", tam))
+                fila.add_widget(lbl)
+                scroll_layout.add_widget(fila)
 
         b_cerrar = Button(text="Cerrar", size_hint_y=None, height=dp(48))
         b_cerrar.bind(on_release=lambda *_: popup.dismiss())
