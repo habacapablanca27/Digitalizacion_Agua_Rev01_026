@@ -348,7 +348,8 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
 
     resultado = []
     for i, capa in enumerate(capas_elegidas):
-        campo_etiqueta = campos_etiqueta.get(capa["nombre"])
+        info_etiqueta = campos_etiqueta.get(capa["nombre"])
+        campo_etiqueta = info_etiqueta["campo"] if info_etiqueta else None
         geom = leer_geometria_capa(
             carpeta, capa["archivo_shp"], max_anillos=max_anillos_por_capa,
             campo_etiqueta=campo_etiqueta,
@@ -359,13 +360,21 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
         if not trazos:
             color_defecto = paleta[i % len(paleta)]
             trazos = [(color_defecto[0], color_defecto[1], color_defecto[2], 1.1)]
-        resultado.append({
+        entrada = {
             "nombre": capa["nombre"],
             "tipo": geom["tipo"],
             "trazos": [list(t) for t in trazos],
             "anillos": geom["anillos"],
             "etiquetas": geom.get("etiquetas", []),
-        })
+        }
+        if info_etiqueta:
+            entrada["estilo_etiqueta"] = {
+                "color": list(info_etiqueta["color"]),
+                "tam_pt": info_etiqueta["tam_pt"],
+                "halo_color": list(info_etiqueta["halo_color"]),
+                "halo_ancho": info_etiqueta["halo_ancho"],
+            }
+        resultado.append(entrada)
     with open(ruta_salida, "w", encoding="utf-8") as f:
         json.dump(resultado, f)
     return resultado

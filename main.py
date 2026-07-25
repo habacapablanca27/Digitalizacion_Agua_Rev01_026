@@ -1012,7 +1012,7 @@ class PantallaMapa(Screen):
         self.contenedor_mapa = FloatLayout()
         self.root_box.add_widget(self.contenedor_mapa)
 
-        self.cruceta = Label(text="+", font_size=dp(28), bold=True,
+        self.cruceta = Label(text="+", font_size=dp(28), bold=True, color=(1, 0, 0, 1),
                               size_hint=(None, None), size=(dp(30), dp(30)),
                               pos_hint={"center_x": 0.5, "center_y": 0.5})
         self.contenedor_mapa.add_widget(self.cruceta)
@@ -1022,9 +1022,27 @@ class PantallaMapa(Screen):
         b_agregar.bind(on_release=lambda *_: self._agregar_punto_en_centro())
         self.contenedor_mapa.add_widget(b_agregar)
 
+        b_zoom_mas = Button(text="+", bold=True, font_size=dp(22), size_hint=(None, None),
+                             size=(dp(48), dp(48)), pos_hint={"right": 0.98, "y": 0.14})
+        b_zoom_mas.bind(on_release=lambda *_: self._cambiar_zoom(1))
+        self.contenedor_mapa.add_widget(b_zoom_mas)
+
+        b_zoom_menos = Button(text="-", bold=True, font_size=dp(22), size_hint=(None, None),
+                               size=(dp(48), dp(48)), pos_hint={"right": 0.98, "y": 0.03})
+        b_zoom_menos.bind(on_release=lambda *_: self._cambiar_zoom(-1))
+        self.contenedor_mapa.add_widget(b_zoom_menos)
+
         self.info = Label(text="", size_hint_y=None, height=dp(28))
         self.root_box.add_widget(self.info)
         self.add_widget(self.root_box)
+
+    def _cambiar_zoom(self, delta):
+        if self.mapview is None:
+            return
+        nuevo_zoom = self.mapview.zoom + delta
+        maximo = self.mapview.map_source.max_zoom
+        minimo = self.mapview.map_source.min_zoom
+        self.mapview.zoom = max(minimo, min(maximo, nuevo_zoom))
 
     def on_pre_enter(self):
         # Quita solo el mapa anterior (mantiene cruceta/botón que ya están añadidos una vez)
@@ -1298,19 +1316,37 @@ class CapaVectorFondo:
                 # sola vez, no en cada frame) y un flag "activa" para el
                 # panel de capas de la pantalla del mapa.
                 self.capas = capas
-                self._texturas_etiquetas = {}  # texto -> textura (cache, para no re-renderizar cada frame)
+                self._texturas_etiquetas = {}  # (texto,color,tam) -> textura (cache)
                 for capa in self.capas:
                     capa.setdefault("activa", True)
                     if "anillos_bbox" not in capa:
                         capa["anillos_bbox"] = [_bbox_anillo(a) for a in capa["anillos"]]
 
-            def _textura_para(self, texto):
-                textura = self._texturas_etiquetas.get(texto)
+            def _textura_para(self, texto, estilo):
+                color = tuple(estilo["color"])
+                tam_pt = estilo["tam_pt"]
+                halo_color = tuple(estilo.get("halo_color", (1, 1, 1)))
+                halo_ancho = estilo.get("halo_ancho", 0)
+                clave = (texto, color, tam_pt, halo_color, halo_ancho)
+                textura = self._texturas_etiquetas.get(clave)
                 if textura is None:
-                    etiqueta = CoreLabel(text=texto, font_size=dp(12), bold=True, color=(1, 1, 1, 1))
+                    # El tamaño de fuente de QGIS esta pensado para el
+                    # lienzo de impresion, no para pantalla de movil; se
+                    # escala para que se pueda leer bien en el telefono.
+                    tam_px = max(11, round(tam_pt * 1.8))
+                    kwargs_halo = {}
+                    if halo_ancho:
+                        kwargs_halo = {
+                            "outline_width": max(1, round(halo_ancho * 1.5)),
+                            "outline_color": halo_color,
+                        }
+                    etiqueta = CoreLabel(
+                        text=texto, font_size=dp(tam_px), bold=True,
+                        color=(*color, 1), **kwargs_halo,
+                    )
                     etiqueta.refresh()
                     textura = etiqueta.texture
-                    self._texturas_etiquetas[texto] = textura
+                    self._texturas_etiquetas[clave] = textura
                 return textura
 
             def reposition(self):
@@ -1322,6 +1358,21 @@ class CapaVectorFondo:
                 v_lat1, v_lon1, v_lat2, v_lon2 = bbox
                 v_lat_min, v_lat_max = min(v_lat1, v_lat2), max(v_lat1, v_lat2)
                 v_lon_min, v_lon_max = min(v_lon1, v_lon2), max(v_lon1, v_lon2)
+
+                # Para que las etiquetas no se amontonen unas encima de
+                # otras (como se veia en capas con muchas parcelas
+                # pequeñas juntas), se recuerda el hueco en pantalla que
+                # ya ocupa cada etiqueta ya colocada en este frame, y se
+                # descarta la siguiente si se solapa con alguna.
+                huecos_ocupados = []
+
+                def _hueco_libre(x, y, w, h):
+                    x0, y0, x1, y1 = x - w / 2, y - h / 2, x + w / 2, y + h / 2
+                    for hx0, hy0, hx1, hy1 in huecos_ocupados:
+                        if x0 < hx1 and x1 > hx0 and y0 < hy1 and y1 > hy0:
+                            return False
+                    huecos_ocupados.append((x0, y0, x1, y1))
+                    return True
 
                 with self.canvas:
                     for capa in self.capas:
@@ -1359,11 +1410,15 @@ class CapaVectorFondo:
                                 ancho_px = max(1.0, ancho_mm * 1.6)
                                 Line(points=puntos_xy, width=ancho_px, close=cerrado)
 
-                        # Etiquetas de texto (direcciones, etc.), igual que
-                        # las que ya tenía configuradas esta capa en QGIS.
-                        # Solo se dibujan si hay zoom suficiente para
-                        # leerlas sin que se amontone todo el texto.
+                        # Etiquetas de texto (direcciones, etc.), con el
+                        # mismo color/tamaño/halo que ya tenía configurado
+                        # esta capa en QGIS. Solo se dibujan si hay zoom
+                        # suficiente para leerlas sin amontonarse, y se
+                        # salta cualquiera que choque con otra ya puesta.
                         etiquetas = capa.get("etiquetas") or []
+                        estilo = capa.get("estilo_etiqueta") or {
+                            "color": (1, 1, 1), "tam_pt": 8, "halo_color": (0, 0, 0), "halo_ancho": 0.8,
+                        }
                         if etiquetas and mapa.zoom >= ZOOM_MINIMO_ETIQUETAS:
                             Color(1, 1, 1, 1)
                             for texto, lat, lon in etiquetas:
@@ -1371,11 +1426,11 @@ class CapaVectorFondo:
                                         lon < v_lon_min or lon > v_lon_max):
                                     continue
                                 x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
-                                textura = self._textura_para(texto)
-                                Rectangle(
-                                    texture=textura, size=textura.size,
-                                    pos=(x - textura.size[0] / 2, y - textura.size[1] / 2),
-                                )
+                                textura = self._textura_para(texto, estilo)
+                                w, h = textura.size
+                                if not _hueco_libre(x, y, w, h):
+                                    continue
+                                Rectangle(texture=textura, size=(w, h), pos=(x - w / 2, y - h / 2))
 
         return _CapaVectorFondoReal(capas_fondo)
 

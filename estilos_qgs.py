@@ -57,9 +57,11 @@ def leer_estilos_desde_qgs(ruta_qgs):
 
 
 def leer_etiquetas_desde_qgs(ruta_qgs):
-    """Devuelve {nombre_capa: nombre_campo} para las capas que tengan
+    """Devuelve {nombre_capa: {"campo":, "color":(r,g,b), "tam_pt":,
+    "halo_color":(r,g,b), "halo_ancho":}} para las capas que tengan
     etiquetas activadas en QGIS (ej. las 'CON_DIRECCIONES', que muestran
-    el nombre de la calle/dirección escrito sobre el mapa). Solo soporta
+    el nombre de la calle/dirección escrito sobre el mapa), con el mismo
+    color/tamaño/halo blanco que ya tenían definidos ahí. Solo soporta
     el caso más común (una etiqueta = un campo tal cual, sin fórmulas);
     si la capa no tiene etiquetas o usa una expresión, no aparece aquí."""
     try:
@@ -84,8 +86,26 @@ def leer_etiquetas_desde_qgs(ruta_qgs):
         if text_style.get("isExpression") == "1":
             continue  # fórmula compleja; no la intentamos reproducir
         campo = text_style.get("fieldName")
-        if campo:
-            etiquetas_por_capa[nombre] = campo
+        if not campo:
+            continue
+
+        color = _parse_color(text_style.get("textColor")) or (0, 0, 0)
+        tam_pt = _parse_float(text_style.get("fontSize"), 8)
+
+        halo_color = (1, 1, 1)
+        halo_ancho = 0
+        buffer_el = labeling.find(".//text-buffer")
+        if buffer_el is not None and buffer_el.get("bufferDraw") == "1":
+            halo_color = _parse_color(buffer_el.get("bufferColor")) or (1, 1, 1)
+            halo_ancho = _parse_float(buffer_el.get("bufferSize"), 0.8)
+
+        etiquetas_por_capa[nombre] = {
+            "campo": campo,
+            "color": color,
+            "tam_pt": tam_pt,
+            "halo_color": halo_color,
+            "halo_ancho": halo_ancho,
+        }
     return etiquetas_por_capa
 
 
