@@ -75,6 +75,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.image import Image, AsyncImage
 from kivy.metrics import dp
 from kivy.clock import Clock
+from kivy.properties import ObjectProperty, NumericProperty
 
 import data_store as ds
 from export_shapefile import exportar_shapefile
@@ -274,6 +275,10 @@ class PantallaImportar(Screen):
     def _mostrar_popup_capas(self, capas, origen="carpeta"):
         self._todas_las_capas_disponibles = capas
         box = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
+        box.add_widget(Label(
+            text="Elige la capa que tiene los contadores (puntos) a digitalizar",
+            size_hint_y=None, height=dp(40)))
+
         scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
         scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
         scroll = ScrollView()
@@ -282,21 +287,52 @@ class PantallaImportar(Screen):
 
         popup = Popup(title="Elige la capa a importar (puntos)", content=box, size_hint=(0.9, 0.9))
 
-        def elegir(inst, c):
-            popup.dismiss()
-            if origen == "zip":
-                self._importar_capa_de_zip_elegida(c)
-            else:
-                self._importar_capa_elegida(c)
+        # Selección única (como un grupo de radio-botones): marcar una
+        # casilla desmarca automáticamente las demás, porque solo se
+        # puede importar UNA capa de puntos a la vez.
+        checks = []
+
+        def _marcar_solo_esta(cb_elegida, *_):
+            if not cb_elegida.active:
+                return
+            for cb, _capa in checks:
+                if cb is not cb_elegida:
+                    cb.active = False
 
         for capa in capas:
-            btn = Button(text=capa["nombre"], size_hint_y=None, height=dp(50))
-            btn.bind(on_release=lambda inst, c=capa: elegir(inst, c))
-            scroll_layout.add_widget(btn)
+            fila = BoxLayout(size_hint_y=None, height=dp(48))
+            cb = CheckBox(size_hint_x=None, width=dp(44))
+            cb.bind(active=_marcar_solo_esta)
+            fila.add_widget(cb)
+            lbl = Label(text=capa["nombre"], halign="left", valign="middle", shorten=True, shorten_from="right")
+            lbl.bind(size=lambda inst, tam: setattr(inst, "text_size", tam))
+            fila.add_widget(lbl)
+            scroll_layout.add_widget(fila)
+            checks.append((cb, capa))
 
-        b_cancel = Button(text="Cancelar", size_hint_y=None, height=dp(48))
-        b_cancel.bind(on_release=lambda *_: popup.dismiss())
-        box.add_widget(b_cancel)
+        def continuar(*_):
+            elegidas = [capa for cb, capa in checks if cb.active]
+            if not elegidas:
+                self.info.text = "Elige una capa antes de continuar."
+                return
+            capa = elegidas[0]
+            popup.dismiss()
+            if origen == "zip":
+                self._importar_capa_de_zip_elegida(capa)
+            else:
+                self._importar_capa_elegida(capa)
+
+        def cancelar(*_):
+            popup.dismiss()
+
+        fila_botones = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        b_cancelar = Button(text="Cancelar")
+        b_cancelar.bind(on_release=cancelar)
+        b_continuar = Button(text="Continuar")
+        b_continuar.bind(on_release=continuar)
+        fila_botones.add_widget(b_cancelar)
+        fila_botones.add_widget(b_continuar)
+        box.add_widget(fila_botones)
         popup.open()
 
     def _importar_capa_de_zip_elegida(self, capa):
@@ -687,7 +723,10 @@ class PantallaFicha(Screen):
         acciones2 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8), padding=(dp(8), 0))
         b_salir = Button(text="Salir sin guardar")
         b_salir.bind(on_release=self.salir_sin_guardar)
+        b_ver_mapa = Button(text="Ver en el mapa")
+        b_ver_mapa.bind(on_release=self.ver_en_mapa)
         acciones2.add_widget(b_salir)
+        acciones2.add_widget(b_ver_mapa)
         root.add_widget(acciones2)
 
         self.estado = Label(text="", size_hint_y=None, height=dp(24))
@@ -926,6 +965,16 @@ class PantallaFicha(Screen):
         self.manager.current = "lista"
         self.manager.get_screen("lista").refrescar()
 
+    def ver_en_mapa(self, *_):
+        """Va directo al mapa centrado en este punto (resaltado en
+        amarillo), para poder seguir digitalizando el siguiente punto
+        cercano desde ahí, sin tener que pasar por la lista."""
+        if not self.punto:
+            return
+        pantalla_mapa = self.manager.get_screen("mapa")
+        pantalla_mapa._id_seleccionado = self.punto.get("_id")
+        self.manager.current = "mapa"
+
     def salir_sin_guardar(self, *_):
         # Revierte el punto a como estaba justo al abrir la ficha. Como las
         # fotos se guardan al momento de tomarlas (ver _foto_lista), esto
@@ -944,6 +993,7 @@ class PantallaMapa(Screen):
         self.mapview = None
         self.capa_fondo_widget = None
         self.capa_marcadores = None
+        self._id_seleccionado = None
         self.root_box = BoxLayout(orientation="vertical")
 
         cab = BoxLayout(size_hint_y=None, height=dp(48), padding=(dp(8), 0), spacing=dp(8))
@@ -989,35 +1039,78 @@ class PantallaMapa(Screen):
             self.info.text = f"No se pudo cargar el mapa: {e}"
             return
 
+        # MapView "normal" solo pinta UNA fuente de mapa. Para el modo
+        # "Híbrida" (satélite PNOA de fondo + callejero OSM semi-
+        # transparente encima) hace falta pintar una SEGUNDA fuente por
+        # encima con opacidad reducida. kivy_garden.mapview no trae esto
+        # de serie -- de hecho su propio código tiene un comentario
+        # "XXX do overlay support" sin terminar -- pero la pieza que
+        # hace falta (load_tile_for_source ya acepta un parámetro de
+        # opacidad) SÍ está, simplemente nadie la conectó. Aquí se
+        # conecta con una subclase mínima.
+        class MapViewConSuperposicion(MapView):
+            fuente_superpuesta = ObjectProperty(None, allownone=True)
+            opacidad_superpuesta = NumericProperty(0.35)
+
+            def load_tile(self, x, y, size, zoom):
+                if self.tile_in_tile_map(x, y) or zoom != self._zoom:
+                    return
+                self.load_tile_for_source(self.map_source, 1.0, size, x, y, zoom)
+                if self.fuente_superpuesta is not None:
+                    self.load_tile_for_source(
+                        self.fuente_superpuesta, self.opacidad_superpuesta, size, x, y, zoom
+                    )
+                self.tile_map_set(x, y, True)
+
+        self._MapViewConSuperposicion = MapViewConSuperposicion
+
         # Fuentes de mapa disponibles (como el selector de "Mapas" de
         # QField). OSM es el callejero de siempre; PNOA son las
         # ortofotos aéreas oficiales del Instituto Geográfico Nacional
-        # (gratuitas y de uso público, pensadas para esto). No incluimos
-        # "Google Maps"/"Bing" como en QField porque esos necesitan una
-        # clave de API de pago; si más adelante quieres integrarlos con
-        # tu propia clave, se puede añadir igual que estas.
+        # (gratuitas y de uso público, pensadas para esto). "Híbrida"
+        # combina las dos: PNOA de fondo + calles de OSM encima al 35%
+        # de opacidad, para ver las calles sobre la foto aérea real. No
+        # incluimos "Google Maps"/"Bing" como en QField porque esos
+        # necesitan una clave de API de pago; si más adelante quieres
+        # integrarlos con tu propia clave, se puede añadir igual.
+        fuente_osm = MapSource()
+        fuente_pnoa = MapSource(
+            url="https://www.ign.es/wmts/pnoa-ma?service=WMTS&request=GetTile&version=1.0.0"
+                "&layer=OI.OrthoimageCoverage&style=default&format=image/jpeg"
+                "&tilematrixset=GoogleMapsCompatible&tilematrix={z}&tilerow={y}&tilecol={x}",
+            min_zoom=0, max_zoom=19, image_ext="jpeg",
+            attribution="PNOA cedido por © Instituto Geográfico Nacional de España",
+        )
         self.fuentes_mapa = {
-            "Calles (OpenStreetMap)": MapSource(),
-            "Satélite (PNOA - IGN)": MapSource(
-                url="https://www.ign.es/wmts/pnoa-ma?service=WMTS&request=GetTile&version=1.0.0"
-                    "&layer=OI.OrthoimageCoverage&style=default&format=image/jpeg"
-                    "&tilematrixset=GoogleMapsCompatible&tilematrix={z}&tilerow={y}&tilecol={x}",
-                min_zoom=0, max_zoom=19, image_ext="jpeg",
-                attribution="PNOA cedido por © Instituto Geográfico Nacional de España",
-            ),
+            "Calles (OpenStreetMap)": {"base": fuente_osm, "superpuesta": None},
+            "Satélite (PNOA - IGN)": {"base": fuente_pnoa, "superpuesta": None},
+            "Híbrida (PNOA + calles 35%)": {"base": fuente_pnoa, "superpuesta": fuente_osm},
         }
         fuente_guardada = getattr(self, "_nombre_fuente_actual", "Calles (OpenStreetMap)")
         fuente_inicial = self.fuentes_mapa.get(fuente_guardada, self.fuentes_mapa["Calles (OpenStreetMap)"])
 
         puntos = [p for p in ds.cargar_puntos() if _coord_valida(p.get("Lat")) and _coord_valida(p.get("Lon"))]
 
-        if puntos:
+        punto_seleccionado = None
+        if self._id_seleccionado is not None:
+            punto_seleccionado = next((p for p in puntos if p.get("_id") == self._id_seleccionado), None)
+
+        zoom_inicial = 16
+        if punto_seleccionado is not None:
+            lat_centro = float(punto_seleccionado["Lat"])
+            lon_centro = float(punto_seleccionado["Lon"])
+            zoom_inicial = 18  # más cerca, para ver bien el punto que se venía a buscar
+        elif puntos:
             lat_centro = sum(float(p["Lat"]) for p in puntos) / len(puntos)
             lon_centro = sum(float(p["Lon"]) for p in puntos) / len(puntos)
         else:
             lat_centro, lon_centro = 42.9, -3.5  # centro aproximado (Burgos) si no hay puntos aún
 
-        self.mapview = MapView(lat=lat_centro, lon=lon_centro, zoom=16, map_source=fuente_inicial)
+        self.mapview = self._MapViewConSuperposicion(
+            lat=lat_centro, lon=lon_centro, zoom=zoom_inicial,
+            map_source=fuente_inicial["base"],
+            fuente_superpuesta=fuente_inicial["superpuesta"],
+        )
         self.contenedor_mapa.add_widget(self.mapview, index=2)  # detrás de cruceta/botón
 
         # Antes se añadía un MapMarker por punto (hasta 386 widgets a la vez),
@@ -1031,11 +1124,25 @@ class PantallaMapa(Screen):
             cluster_radius="40dp",
         )
         for p in puntos:
+            options = {"on_release": lambda inst, punto=p: self._abrir_ficha(punto)}
+            # Mismo criterio que ya tenías definido en QGIS para la capa
+            # de Contadores (por reglas): rojo = pendiente, verde =
+            # completado, magenta = marcado para borrar. Se añade además
+            # el amarillo para el punto que se seleccionó por última vez
+            # (al volver desde "Ver en el mapa"), que no existía en QGIS
+            # pero ayuda a ubicarse al seguir digitalizando.
+            if p.get("_id") == self._id_seleccionado:
+                options["source"] = os.path.join(os.path.dirname(__file__), "assets", "marcador_amarillo.png")
+            elif p.get("SeBorra"):
+                options["source"] = os.path.join(os.path.dirname(__file__), "assets", "marcador_magenta.png")
+            elif p.get("Completado"):
+                options["source"] = os.path.join(os.path.dirname(__file__), "assets", "marcador_verde.png")
+            # si no, se deja el marcador rojo de siempre (pendiente)
             self.capa_marcadores.add_marker(
                 lon=float(p["Lon"]),
                 lat=float(p["Lat"]),
                 cls=MapMarker,
-                options={"on_release": lambda inst, punto=p: self._abrir_ficha(punto)},
+                options=options,
             )
         self.mapview.add_layer(self.capa_marcadores, mode="window")
 
@@ -1067,18 +1174,42 @@ class PantallaMapa(Screen):
 
         popup = Popup(title="Capas", content=cont, size_hint=(0.85, 0.75))
 
-        # ── Mapa base (calles / satélite) ──
+        # ── Mapa base (calles / satélite / híbrida) ──
         scroll_layout.add_widget(Label(text="Mapa base", bold=True, size_hint_y=None, height=dp(28)))
 
-        def _cambiar_fuente(nombre_fuente, *_):
+        checks_fuente = []
+
+        def _cambiar_fuente(nombre_fuente):
             self._nombre_fuente_actual = nombre_fuente
             if self.mapview is not None:
-                self.mapview.map_source = self.fuentes_mapa[nombre_fuente]
+                fuente = self.fuentes_mapa[nombre_fuente]
+                self.mapview.map_source = fuente["base"]
+                self.mapview.fuente_superpuesta = fuente["superpuesta"]
+                # Las teselas ya cargadas se guardaron para la fuente
+                # anterior; hay que tirarlas para que se vuelvan a pedir
+                # con la fuente/superposición nueva.
+                self.mapview.remove_all_tiles()
+                self.mapview.trigger_update(True)
 
+        def _marcar_solo_esta_fuente(cb_elegida, nombre_fuente, *_):
+            if not cb_elegida.active:
+                return
+            for cb, _n in checks_fuente:
+                if cb is not cb_elegida:
+                    cb.active = False
+            _cambiar_fuente(nombre_fuente)
+
+        nombre_actual = getattr(self, "_nombre_fuente_actual", "Calles (OpenStreetMap)")
         for nombre_fuente in self.fuentes_mapa:
-            b = Button(text=nombre_fuente, size_hint_y=None, height=dp(44))
-            b.bind(on_release=lambda inst, n=nombre_fuente: _cambiar_fuente(n))
-            scroll_layout.add_widget(b)
+            fila = BoxLayout(size_hint_y=None, height=dp(44))
+            cb = CheckBox(active=(nombre_fuente == nombre_actual), size_hint_x=None, width=dp(44))
+            cb.bind(active=lambda inst, valor, n=nombre_fuente: _marcar_solo_esta_fuente(inst, n))
+            fila.add_widget(cb)
+            lbl_fuente = Label(text=nombre_fuente, halign="left", valign="middle", shorten=True, shorten_from="right")
+            lbl_fuente.bind(size=lambda inst, tam: setattr(inst, "text_size", tam))
+            fila.add_widget(lbl_fuente)
+            scroll_layout.add_widget(fila)
+            checks_fuente.append((cb, nombre_fuente))
 
         # ── Capas de fondo (parcelas, límites, construcciones...) ──
         if self.capa_fondo_widget and getattr(self.capa_fondo_widget, "capas", None):
@@ -1149,9 +1280,11 @@ class CapaVectorFondo:
 
     def __new__(cls, capas_fondo):
         from kivy_garden.mapview import MapLayer
-        from kivy.graphics import Color, Line
+        from kivy.graphics import Color, Line, Rectangle
+        from kivy.core.text import Label as CoreLabel
 
         MAX_PUNTOS_POR_ANILLO = 120
+        ZOOM_MINIMO_ETIQUETAS = 17  # de más lejos, quedaría todo lleno de texto encimado
 
         def _bbox_anillo(anillo):
             lats = [p[0] for p in anillo]
@@ -1165,10 +1298,20 @@ class CapaVectorFondo:
                 # sola vez, no en cada frame) y un flag "activa" para el
                 # panel de capas de la pantalla del mapa.
                 self.capas = capas
+                self._texturas_etiquetas = {}  # texto -> textura (cache, para no re-renderizar cada frame)
                 for capa in self.capas:
                     capa.setdefault("activa", True)
                     if "anillos_bbox" not in capa:
                         capa["anillos_bbox"] = [_bbox_anillo(a) for a in capa["anillos"]]
+
+            def _textura_para(self, texto):
+                textura = self._texturas_etiquetas.get(texto)
+                if textura is None:
+                    etiqueta = CoreLabel(text=texto, font_size=dp(12), bold=True, color=(1, 1, 1, 1))
+                    etiqueta.refresh()
+                    textura = etiqueta.texture
+                    self._texturas_etiquetas[texto] = textura
+                return textura
 
             def reposition(self):
                 mapa = self.parent
@@ -1215,6 +1358,24 @@ class CapaVectorFondo:
                                 Color(r, g, b, 0.9)
                                 ancho_px = max(1.0, ancho_mm * 1.6)
                                 Line(points=puntos_xy, width=ancho_px, close=cerrado)
+
+                        # Etiquetas de texto (direcciones, etc.), igual que
+                        # las que ya tenía configuradas esta capa en QGIS.
+                        # Solo se dibujan si hay zoom suficiente para
+                        # leerlas sin que se amontone todo el texto.
+                        etiquetas = capa.get("etiquetas") or []
+                        if etiquetas and mapa.zoom >= ZOOM_MINIMO_ETIQUETAS:
+                            Color(1, 1, 1, 1)
+                            for texto, lat, lon in etiquetas:
+                                if (lat < v_lat_min or lat > v_lat_max or
+                                        lon < v_lon_min or lon > v_lon_max):
+                                    continue
+                                x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
+                                textura = self._textura_para(texto)
+                                Rectangle(
+                                    texture=textura, size=textura.size,
+                                    pos=(x - textura.size[0] / 2, y - textura.size[1] / 2),
+                                )
 
         return _CapaVectorFondoReal(capas_fondo)
 

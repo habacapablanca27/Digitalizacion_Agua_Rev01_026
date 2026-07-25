@@ -56,6 +56,39 @@ def leer_estilos_desde_qgs(ruta_qgs):
     return estilos
 
 
+def leer_etiquetas_desde_qgs(ruta_qgs):
+    """Devuelve {nombre_capa: nombre_campo} para las capas que tengan
+    etiquetas activadas en QGIS (ej. las 'CON_DIRECCIONES', que muestran
+    el nombre de la calle/dirección escrito sobre el mapa). Solo soporta
+    el caso más común (una etiqueta = un campo tal cual, sin fórmulas);
+    si la capa no tiene etiquetas o usa una expresión, no aparece aquí."""
+    try:
+        tree = ET.parse(ruta_qgs)
+    except Exception:
+        return {}
+    root = tree.getroot()
+
+    etiquetas_por_capa = {}
+    for ml in root.iter("maplayer"):
+        if ml.get("type") != "vector":
+            continue
+        if ml.get("labelsEnabled") != "1":
+            continue
+        nombre = ml.findtext("layername") or ""
+        labeling = ml.find("labeling")
+        if labeling is None or labeling.get("type") != "simple":
+            continue
+        text_style = labeling.find(".//text-style")
+        if text_style is None:
+            continue
+        if text_style.get("isExpression") == "1":
+            continue  # fórmula compleja; no la intentamos reproducir
+        campo = text_style.get("fieldName")
+        if campo:
+            etiquetas_por_capa[nombre] = campo
+    return etiquetas_por_capa
+
+
 def _leer_opciones(layer_el):
     """El XML de un 'layer' de símbolo QGIS mete sus opciones en un
     <Option type="Map"> con hijos <Option name=... value=.../>. Esto los

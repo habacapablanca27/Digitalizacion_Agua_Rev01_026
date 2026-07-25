@@ -226,11 +226,15 @@ def _simplificar_anillo(anillo, max_puntos=40):
     return reducido
 
 
-def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500):
+def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=None):
     """Lee CUALQUIER shapefile (puntos, líneas o polígonos) y devuelve sus
     geometrías ya convertidas a Lat/Lon, para dibujarlas como capa de fondo
-    en el mapa (parcelas, construcciones, límites, etc.). No trae los
-    atributos/campos, solo la forma.
+    en el mapa (parcelas, construcciones, límites, etc.).
+
+    Si se indica 'campo_etiqueta' (el campo que QGIS use como etiqueta de
+    esa capa, ej. "DIRECCION"), también devuelve una lista de etiquetas
+    de texto con su posición (centro de cada polígono/línea), para poder
+    escribirlas en el mapa igual que QGIS.
 
     max_anillos: límite de seguridad para no cargar capas gigantes que
     harían el mapa lentísimo en el móvil (con eso sobra para un municipio).
@@ -259,25 +263,52 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500):
             lon, lat = x, y
         return round(lat, 6), round(lon, 6)
 
+    # Si se pide una etiqueta, hace falta leer también los atributos
+    # (no solo la geometría), así que se recorre con las dos cosas juntas.
+    if campo_etiqueta:
+        iterador = ((sr.shape, sr.record) for sr in sf.iterShapeRecords())
+    else:
+        iterador = ((shape, None) for shape in sf.iterShapes())
+
     anillos = []
-    for shape in sf.iterShapes():
+    etiquetas = []
+    for shape, record in iterador:
         puntos = shape.points
         if not puntos:
             continue
+
+        texto = None
+        if record is not None:
+            try:
+                texto = str(record[campo_etiqueta]).strip()
+            except Exception:
+                texto = None
+            if texto and texto.lower() in ("none", "null", ""):
+                texto = None
+
         if tipo == "point":
             lat, lon = convertir(*puntos[0])
             anillos.append([[lat, lon]])
+            if texto:
+                etiquetas.append([texto, lat, lon])
         else:
             partes = list(shape.parts) + [len(puntos)]
+            ya_puesta_etiqueta = False
             for i in range(len(partes) - 1):
                 trozo = puntos[partes[i]:partes[i + 1]]
                 anillo = [list(convertir(x, y)) for x, y in trozo]
                 if len(anillo) >= 2:
-                    anillos.append(_simplificar_anillo(anillo))
+                    anillo = _simplificar_anillo(anillo)
+                    anillos.append(anillo)
+                    if texto and not ya_puesta_etiqueta:
+                        lat_c = sum(p[0] for p in anillo) / len(anillo)
+                        lon_c = sum(p[1] for p in anillo) / len(anillo)
+                        etiquetas.append([texto, lat_c, lon_c])
+                        ya_puesta_etiqueta = True
         if len(anillos) >= max_anillos:
             break
 
-    return {"tipo": tipo, "anillos": anillos}
+    return {"tipo": tipo, "anillos": anillos, "etiquetas": etiquetas}
 
 
 def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_capa=800):
@@ -292,7 +323,7 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
     paleta fija, como antes.
     """
     import json
-    from estilos_qgs import leer_estilos_desde_qgs
+    from estilos_qgs import leer_estilos_desde_qgs, leer_etiquetas_desde_qgs
 
     paleta = [
         [0.9, 0.5, 0.1],     # naranja
@@ -303,16 +334,25 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
     ]
 
     estilos_reales = {}
+    campos_etiqueta = {}
     ruta_qgs = _buscar_qgs_en_carpeta(carpeta)
     if ruta_qgs:
         try:
             estilos_reales = leer_estilos_desde_qgs(ruta_qgs)
         except Exception:
             estilos_reales = {}
+        try:
+            campos_etiqueta = leer_etiquetas_desde_qgs(ruta_qgs)
+        except Exception:
+            campos_etiqueta = {}
 
     resultado = []
     for i, capa in enumerate(capas_elegidas):
-        geom = leer_geometria_capa(carpeta, capa["archivo_shp"], max_anillos=max_anillos_por_capa)
+        campo_etiqueta = campos_etiqueta.get(capa["nombre"])
+        geom = leer_geometria_capa(
+            carpeta, capa["archivo_shp"], max_anillos=max_anillos_por_capa,
+            campo_etiqueta=campo_etiqueta,
+        )
         if not geom or not geom["anillos"]:
             continue
         trazos = estilos_reales.get(capa["nombre"])
@@ -324,6 +364,7 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
             "tipo": geom["tipo"],
             "trazos": [list(t) for t in trazos],
             "anillos": geom["anillos"],
+            "etiquetas": geom.get("etiquetas", []),
         })
     with open(ruta_salida, "w", encoding="utf-8") as f:
         json.dump(resultado, f)
