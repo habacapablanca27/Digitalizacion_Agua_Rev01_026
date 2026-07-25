@@ -1046,7 +1046,15 @@ class PantallaMapa(Screen):
             cb = CheckBox(active=capa.get("activa", True), size_hint_x=None, width=dp(44))
             cb.bind(active=lambda inst, valor, c=capa: _on_toggle(c, valor))
             fila.add_widget(cb)
-            fila.add_widget(Label(text=capa["nombre"]))
+            # Antes el texto no tenia limite de ancho: con nombres de capa
+            # largos, Kivy dibujaba el texto centrado en su hueco y se
+            # desbordaba tapando el propio checkbox. Con text_size fijado
+            # al ancho real de la fila (y "shorten" para acortar con "…"
+            # si aun asi no cabe), el texto queda siempre DESPUES del
+            # checkbox y legible.
+            lbl = Label(text=capa["nombre"], halign="left", valign="middle", shorten=True, shorten_from="right")
+            lbl.bind(size=lambda inst, tam: setattr(inst, "text_size", tam))
+            fila.add_widget(lbl)
             scroll_layout.add_widget(fila)
 
         b_cerrar = Button(text="Cerrar", size_hint_y=None, height=dp(48))
@@ -1134,8 +1142,7 @@ class CapaVectorFondo:
                     for capa in self.capas:
                         if not capa.get("activa", True):
                             continue
-                        r, g, b = capa["color"]
-                        Color(r, g, b, 0.85)
+                        trazos = capa.get("trazos") or [(*capa.get("color", (0.8, 0.2, 0.2)), 1.1)]
                         cerrado = capa["tipo"] == "polygon"
                         for anillo, bb in zip(capa["anillos"], capa["anillos_bbox"]):
                             a_lat_min, a_lon_min, a_lat_max, a_lon_max = bb
@@ -1155,8 +1162,17 @@ class CapaVectorFondo:
                             for lat, lon in puntos_anillo:
                                 x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
                                 puntos_xy.extend([x, y])
-                            if len(puntos_xy) >= 4:
-                                Line(points=puntos_xy, width=1.1, close=cerrado)
+                            if len(puntos_xy) < 4:
+                                continue
+
+                            # Varios trazos por anillo = el efecto "halo"
+                            # que ya traía la capa en QGIS (p.ej. Límites:
+                            # una línea negra gruesa debajo y una naranja
+                            # más fina encima, en ese orden).
+                            for r, g, b, ancho_mm in trazos:
+                                Color(r, g, b, 0.9)
+                                ancho_px = max(1.0, ancho_mm * 1.6)
+                                Line(points=puntos_xy, width=ancho_px, close=cerrado)
 
         return _CapaVectorFondoReal(capas_fondo)
 

@@ -284,8 +284,15 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
     """Lee las capas de fondo QUE EL USUARIO ELIGIÓ (lista de dicts con
     'nombre' y 'archivo_shp') y las guarda en un JSON ligero para
     dibujarlas de referencia en el mapa (parcelas, límite, construcciones...).
+
+    Si la carpeta trae un proyecto .qgs, se usa el color/grosor de línea
+    QUE YA TENÍA CADA CAPA EN QGIS (incluidos los "halos" de varios
+    trazos apilados, como el negro+naranja de "Límites"). Si una capa no
+    tiene estilo ahí (o no hay .qgs), se le asigna un color de una
+    paleta fija, como antes.
     """
     import json
+    from estilos_qgs import leer_estilos_desde_qgs
 
     paleta = [
         [0.9, 0.5, 0.1],     # naranja
@@ -294,15 +301,28 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
         [0.4, 0.4, 0.8],     # azul-violeta
         [0.8, 0.2, 0.2],     # rojo
     ]
+
+    estilos_reales = {}
+    ruta_qgs = _buscar_qgs_en_carpeta(carpeta)
+    if ruta_qgs:
+        try:
+            estilos_reales = leer_estilos_desde_qgs(ruta_qgs)
+        except Exception:
+            estilos_reales = {}
+
     resultado = []
     for i, capa in enumerate(capas_elegidas):
         geom = leer_geometria_capa(carpeta, capa["archivo_shp"], max_anillos=max_anillos_por_capa)
         if not geom or not geom["anillos"]:
             continue
+        trazos = estilos_reales.get(capa["nombre"])
+        if not trazos:
+            color_defecto = paleta[i % len(paleta)]
+            trazos = [(color_defecto[0], color_defecto[1], color_defecto[2], 1.1)]
         resultado.append({
             "nombre": capa["nombre"],
             "tipo": geom["tipo"],
-            "color": paleta[i % len(paleta)],
+            "trazos": [list(t) for t in trazos],
             "anillos": geom["anillos"],
         })
     with open(ruta_salida, "w", encoding="utf-8") as f:
