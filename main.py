@@ -936,6 +936,9 @@ class PantallaMapa(Screen):
         b_atras.bind(on_release=lambda *_: setattr(self.manager, "current", "lista"))
         cab.add_widget(b_atras)
         cab.add_widget(Label(text="Mapa de puntos"))
+        b_capas = Button(text="Capas", size_hint_x=None, width=dp(70))
+        b_capas.bind(on_release=self._abrir_panel_capas)
+        cab.add_widget(b_capas)
         self.root_box.add_widget(cab)
 
         # El mapa va dentro de un FloatLayout para poder superponer la cruceta
@@ -1019,6 +1022,38 @@ class PantallaMapa(Screen):
         except Exception as e:
             _log_debug(f"EXCEPCION al cargar capa de fondo en el mapa: {e!r}")
 
+    def _abrir_panel_capas(self, *_):
+        if not self.capa_fondo_widget or not getattr(self.capa_fondo_widget, "capas", None):
+            self.info.text = "No hay capas de fondo cargadas (impórtalas al traer el Shapefile)."
+            return
+
+        cont = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(6))
+        scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
+        scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
+        scroll = ScrollView()
+        scroll.add_widget(scroll_layout)
+        cont.add_widget(scroll)
+
+        popup = Popup(title="Capas de fondo", content=cont, size_hint=(0.85, 0.7))
+
+        def _on_toggle(capa, valor):
+            capa["activa"] = valor
+            if self.capa_fondo_widget is not None:
+                self.capa_fondo_widget.reposition()
+
+        for capa in self.capa_fondo_widget.capas:
+            fila = BoxLayout(size_hint_y=None, height=dp(44))
+            cb = CheckBox(active=capa.get("activa", True), size_hint_x=None, width=dp(44))
+            cb.bind(active=lambda inst, valor, c=capa: _on_toggle(c, valor))
+            fila.add_widget(cb)
+            fila.add_widget(Label(text=capa["nombre"]))
+            scroll_layout.add_widget(fila)
+
+        b_cerrar = Button(text="Cerrar", size_hint_y=None, height=dp(48))
+        b_cerrar.bind(on_release=lambda *_: popup.dismiss())
+        cont.add_widget(b_cerrar)
+        popup.open()
+
     def _agregar_punto_en_centro(self):
         """Crea un punto nuevo en las coordenadas del centro del mapa
         (donde está la cruceta) y abre su ficha para rellenarlo y tomarle
@@ -1048,30 +1083,76 @@ class PantallaMapa(Screen):
 class CapaVectorFondo:
     """Capa de referencia (parcelas, límite, construcciones...) dibujada
     encima del mapa. Se crea dinámicamente heredando de MapLayer solo
-    cuando kivy_garden.mapview ya está disponible."""
+    cuando kivy_garden.mapview ya está disponible.
+
+    Antes recalculaba y volvía a dibujar TODOS los puntos de TODAS las
+    capas en cada pan/zoom (reposition() se llama en cada frame de
+    movimiento), aunque estuvieran fuera de la pantalla — con capas
+    grandes (parcelas de todo un municipio) esto era el principal
+    causante de que el mapa fuera lento. Ahora:
+      - se descarta cada anillo cuya caja (bounding box) no toque la
+        zona visible del mapa, ANTES de convertir sus puntos a pantalla.
+      - los anillos muy detallados (con muchos vértices) se "decimian"
+        (se dibujan solo 1 de cada N puntos) — a la escala a la que se
+        ve un mapa en un móvil, no se nota, pero ahorra mucho trabajo.
+    """
 
     def __new__(cls, capas_fondo):
         from kivy_garden.mapview import MapLayer
         from kivy.graphics import Color, Line
 
+        MAX_PUNTOS_POR_ANILLO = 120
+
+        def _bbox_anillo(anillo):
+            lats = [p[0] for p in anillo]
+            lons = [p[1] for p in anillo]
+            return (min(lats), min(lons), max(lats), max(lons))
+
         class _CapaVectorFondoReal(MapLayer):
             def __init__(self, capas, **kwargs):
                 super().__init__(**kwargs)
+                # Cada capa lleva ya calculada la bbox de cada anillo (una
+                # sola vez, no en cada frame) y un flag "activa" para el
+                # panel de capas de la pantalla del mapa.
                 self.capas = capas
+                for capa in self.capas:
+                    capa.setdefault("activa", True)
+                    if "anillos_bbox" not in capa:
+                        capa["anillos_bbox"] = [_bbox_anillo(a) for a in capa["anillos"]]
 
             def reposition(self):
                 mapa = self.parent
                 if mapa is None:
                     return
                 self.canvas.clear()
+                bbox = mapa.get_bbox()
+                v_lat1, v_lon1, v_lat2, v_lon2 = bbox
+                v_lat_min, v_lat_max = min(v_lat1, v_lat2), max(v_lat1, v_lat2)
+                v_lon_min, v_lon_max = min(v_lon1, v_lon2), max(v_lon1, v_lon2)
+
                 with self.canvas:
                     for capa in self.capas:
+                        if not capa.get("activa", True):
+                            continue
                         r, g, b = capa["color"]
                         Color(r, g, b, 0.85)
                         cerrado = capa["tipo"] == "polygon"
-                        for anillo in capa["anillos"]:
+                        for anillo, bb in zip(capa["anillos"], capa["anillos_bbox"]):
+                            a_lat_min, a_lon_min, a_lat_max, a_lon_max = bb
+                            # Descarta el anillo si su caja no toca la
+                            # zona visible del mapa (no hace falta
+                            # convertir ni un punto suyo a pantalla).
+                            if (a_lat_max < v_lat_min or a_lat_min > v_lat_max or
+                                    a_lon_max < v_lon_min or a_lon_min > v_lon_max):
+                                continue
+
+                            puntos_anillo = anillo
+                            if len(puntos_anillo) > MAX_PUNTOS_POR_ANILLO:
+                                paso = len(puntos_anillo) // MAX_PUNTOS_POR_ANILLO
+                                puntos_anillo = puntos_anillo[::paso]
+
                             puntos_xy = []
-                            for lat, lon in anillo:
+                            for lat, lon in puntos_anillo:
                                 x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
                                 puntos_xy.extend([x, y])
                             if len(puntos_xy) >= 4:

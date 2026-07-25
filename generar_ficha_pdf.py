@@ -119,24 +119,27 @@ def generar_ficha_pdf(punto, ruta_salida=None, municipio="", nucleo="", provinci
 
     lat = str(punto.get("Latitud") or "").strip()
     lon = str(punto.get("Longitud") or "").strip()
-    if lat or lon:
-        coord_lineas = [t for t in (lat, lon) if t]
-    else:
+    if not (lat or lon):
         # Compatibilidad con puntos capturados antes de separar Latitud/Longitud.
         coord_txt = (punto.get("CoordGPS") or "").strip()
-        coord_lineas = [t.strip() for t in coord_txt.split(",") if t.strip()] if coord_txt else None
+        partes = [t.strip() for t in coord_txt.split(",") if t.strip()] if coord_txt else []
+        lat = partes[0] if len(partes) > 0 else ""
+        lon = partes[1] if len(partes) > 1 else ""
 
     filas_izq = [
         ("Ubicación del Contador", ubicacion_txt, None, 1),
         ("Válvula de acometida", _si_no(punto.get("ValAcometi")), None, 1),
-        ("Coordenadas GPS", "", coord_lineas, 2),
+        ("Coordenadas GPS", "", None, 2),
         ("Individual", _si_no(punto.get("Individual")), None, 1),
         ("Alojamiento", punto.get("Alojamiento", ""), None, 1),
     ]
     yy = y
     for etq, val, lineas_fijas, unidades in filas_izq:
         h = unidad * unidades
-        _celda(pdf, dx_izq, yy, col_izq_w, h, etq, val, lineas=lineas_fijas)
+        if etq == "Coordenadas GPS":
+            _celda_coordenadas(pdf, dx_izq, yy, col_izq_w, h, lat, lon)
+        else:
+            _celda(pdf, dx_izq, yy, col_izq_w, h, etq, val, lineas=lineas_fijas)
         yy += h
 
     filas_dcha = [
@@ -236,6 +239,29 @@ def generar_ficha_pdf(punto, ruta_salida=None, municipio="", nucleo="", provinci
 
     if standalone:
         pdf.output(ruta_salida)
+
+
+def _celda_coordenadas(pdf, x, y, w, h, valor_lat, valor_lon):
+    """Como _celda, pero para 'Coordenadas GPS': en vez de mostrar 2
+    líneas sueltas de números, separa Latitud y Longitud en 2 casillas
+    propias (con su etiqueta), para que quede claro cuál es cuál."""
+    tam_titulo = 7.5 if h < 8 else 8
+    th = min(h * 0.5, 5.5)
+    pdf.set_fill_rgb(*AZUL)
+    pdf.rect(x, y, w, th, fill=True, stroke=True)
+    _texto_centrado(pdf, x, y, w, th, ["Coordenadas GPS"], size_pt=tam_titulo, bold=True, color=BLANCO)
+
+    val_y = y + th
+    fila_h = (h - th) / 2
+
+    pdf.set_fill_rgb(0, 0, 0)
+    pdf.rect(x, val_y, w, fila_h, fill=False, stroke=True)
+    pdf.rect(x, val_y + fila_h, w, fila_h, fill=False, stroke=True)
+
+    texto_lat = f"Latitud: {valor_lat}" if valor_lat else "Latitud:"
+    texto_lon = f"Longitud: {valor_lon}" if valor_lon else "Longitud:"
+    _texto_centrado(pdf, x, val_y, w, fila_h, [texto_lat], size_pt=7.5)
+    _texto_centrado(pdf, x, val_y + fila_h, w, fila_h, [texto_lon], size_pt=7.5)
 
 
 def _celda(pdf, x, y, w, h, titulo, valor, wrap=False, lineas=None, size_pt=8):
