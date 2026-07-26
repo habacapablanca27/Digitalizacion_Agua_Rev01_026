@@ -357,6 +357,12 @@ class PantallaImportar(Screen):
             text="¿Qué otras capas quieres ver de fondo en el mapa?\n(elige pocas para que el mapa no vaya lento)",
             size_hint_y=None, height=dp(60)))
 
+        fila_todas = BoxLayout(size_hint_y=None, height=dp(40))
+        cb_todas = CheckBox(size_hint_x=None, width=dp(44))
+        fila_todas.add_widget(cb_todas)
+        fila_todas.add_widget(Label(text="Seleccionar todas", bold=True))
+        box.add_widget(fila_todas)
+
         scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(4))
         scroll_layout.bind(minimum_height=scroll_layout.setter("height"))
         scroll = ScrollView()
@@ -379,6 +385,18 @@ class PantallaImportar(Screen):
             scroll_layout.add_widget(fila)
             checks.append((cb, capa))
 
+        _actualizando_todas = {"en_curso": False}
+
+        def _marcar_todas(_inst, activo):
+            if _actualizando_todas["en_curso"]:
+                return
+            _actualizando_todas["en_curso"] = True
+            for cb, _capa in checks:
+                cb.active = activo
+            _actualizando_todas["en_curso"] = False
+
+        cb_todas.bind(active=_marcar_todas)
+
         popup = Popup(title="Capas de fondo (opcional)", content=box, size_hint=(0.9, 0.9))
 
         def continuar(*_):
@@ -389,11 +407,21 @@ class PantallaImportar(Screen):
         def cancelar(*_):
             popup.dismiss()
 
+        def atras(*_):
+            # Por si se eligió la capa de puntos equivocada en el paso
+            # anterior: vuelve a ese paso sin tener que cancelar todo el
+            # proceso de importación desde el principio.
+            popup.dismiss()
+            self._mostrar_popup_capas(self._todas_las_capas_disponibles, origen="zip")
+
         fila_botones = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        b_atras = Button(text="Atrás")
+        b_atras.bind(on_release=atras)
         b_cancelar = Button(text="Cancelar")
         b_cancelar.bind(on_release=cancelar)
         b_continuar = Button(text="Continuar")
         b_continuar.bind(on_release=continuar)
+        fila_botones.add_widget(b_atras)
         fila_botones.add_widget(b_cancelar)
         fila_botones.add_widget(b_continuar)
         box.add_widget(fila_botones)
@@ -508,6 +536,13 @@ class PantallaLista(Screen):
         cab.add_widget(b_mapa)
         root.add_widget(cab)
 
+        self.buscador = TextInput(
+            hint_text="Buscar por dirección (ej. CL MAYOR)...",
+            multiline=False, size_hint_y=None, height=dp(44),
+        )
+        self.buscador.bind(text=lambda _inst, texto: self.refrescar(texto))
+        root.add_widget(self.buscador)
+
         self.scroll_layout = GridLayout(cols=1, size_hint_y=None, spacing=dp(6))
         self.scroll_layout.bind(minimum_height=self.scroll_layout.setter("height"))
         scroll = ScrollView()
@@ -537,16 +572,28 @@ class PantallaLista(Screen):
         self.add_widget(root)
 
     def on_pre_enter(self):
-        self.refrescar()
+        self.refrescar(self.buscador.text if hasattr(self, "buscador") else "")
 
-    def refrescar(self):
+    def refrescar(self, filtro_texto=""):
         self.scroll_layout.clear_widgets()
+        filtro_texto = (filtro_texto or "").strip().lower()
         for p in ds.cargar_puntos():
+            if filtro_texto and filtro_texto not in (p.get("Direccion", "") or "").lower():
+                continue
             estado_txt = "[OK]" if p.get("Completado") else "[...]"
             fila = Button(
                 text=f"{estado_txt}  {p.get('NFijo','')}  —  {p.get('Direccion','(sin dirección)')}",
                 size_hint_y=None, height=dp(52), halign="left",
             )
+            # Mismo color que ya usan los marcadores del mapa (y que
+            # venía definido en las reglas de QGIS): rojo = pendiente,
+            # verde = completado, magenta = marcado para borrar.
+            if p.get("SeBorra"):
+                fila.background_color = (0.85, 0.25, 0.75, 1)
+            elif p.get("Completado"):
+                fila.background_color = (0.25, 0.65, 0.3, 1)
+            else:
+                fila.background_color = (0.65, 0.3, 0.3, 1)
             fila.bind(on_release=lambda inst, punto=p: self.abrir_ficha(punto))
             self.scroll_layout.add_widget(fila)
 
@@ -677,6 +724,16 @@ class PantallaLista(Screen):
 CALIBRES = ["", "13-A", "15-A", "13/15-A", "20-B", "25-C", "30-D", "32-D", "40-E",
             "50-F", "65-G", "80-H", "100-I", "125-J", "150-K", "200-L", "250-M",
             "300-N", "400-O", "500-P"]
+# En QGIS, lo que se ve en la lista es "13-A?", "20-B"... pero lo que se
+# GUARDA en el campo es solo el número ("13", "20"...). Este mapeo hace
+# que guardemos el mismo valor real, aunque en pantalla se vea la
+# etiqueta completa (igual que en QGIS).
+CALIBRE_VALORES = {
+    "13-A": "13", "15-A": "15", "13/15-A": "13/15", "20-B": "20", "25-C": "25",
+    "30-D": "30", "32-D": "32", "40-E": "40", "50-F": "50", "65-G": "65",
+    "80-H": "80", "100-I": "100", "125-J": "125", "150-K": "150", "200-L": "200",
+    "250-M": "250", "300-N": "300", "400-O": "400", "500-P": "500",
+}
 DIAMETROS = ["", "DN16", "DN20", "DN25", "DN32", "DN40", "DN50", "DN63", "DN75",
              "DN90", "DN110", "DN125", "DN140", "DN160", "DN180", "DN200",
              "DN225", "DN250", "DN280", "DN315", "DN355", "DN400", "DN450", "DN500"]
@@ -712,11 +769,8 @@ class PantallaFicha(Screen):
         root.add_widget(scroll)
 
         acciones = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8), padding=(dp(8), dp(4)))
-        b_gps = Button(text="Capturar GPS")
-        b_gps.bind(on_release=self.capturar_gps)
         b_guardar = Button(text="Guardar")
         b_guardar.bind(on_release=self.guardar)
-        acciones.add_widget(b_gps)
         acciones.add_widget(b_guardar)
         root.add_widget(acciones)
 
@@ -754,6 +808,10 @@ class PantallaFicha(Screen):
         self._texto("Lectura", "Lectura (m³)")
         self._texto("FecLectura", "Fecha lectura",
                     valor_defecto=datetime.now().strftime("%d/%m/%Y"))
+        self._texto("HoraLectur", "Hora lectura",
+                    valor_defecto=datetime.now().strftime("%H:%M:%S"))
+        self._texto("FecHoraLec", "Fecha y hora lectura (registro)",
+                    valor_defecto=datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
         self._spinner("Alojamiento", "Alojamiento", ALOJAMIENTOS)
         self._spinner("Calibre", "Calibre", CALIBRES)
         self._spinner("Diametros", "Diámetros", DIAMETROS)
@@ -762,6 +820,7 @@ class PantallaFicha(Screen):
         self._checkbox("Exterior", "Exterior")
         self._checkbox("Interior", "Interior")
         self._checkbox("UbicarExte", "Ubicar exterior")
+        self._conectar_dependencias_ubicacion()
         self._checkbox("ValAcometi", "Válvula de acometida")
         self._checkbox("Individual", "Individual")
         self._checkbox("LlaveContador", "Llave de contador")
@@ -779,13 +838,14 @@ class PantallaFicha(Screen):
         for campo, etiqueta in CAMPOS_FOTO:
             self._foto(campo, etiqueta)
 
+        CALIBRE_ETIQUETAS = {v: k for k, v in CALIBRE_VALORES.items()}
         for campo, valor in punto.items():
             if campo in self.inputs:
                 w = self.inputs[campo]
                 if isinstance(w, CheckBox):
                     w.active = bool(valor)
                 elif isinstance(w, Spinner) and valor:
-                    w.text = valor
+                    w.text = CALIBRE_ETIQUETAS.get(valor, valor) if campo == "Calibre" else valor
                 elif isinstance(w, TextInput) and valor:
                     w.text = str(valor)
 
@@ -818,6 +878,43 @@ class PantallaFicha(Screen):
         box.add_widget(Label(text=etiqueta))
         self.form.add_widget(Label(text="", size_hint_y=None, height=dp(40)))
         self.form.add_widget(box)
+
+    def _conectar_dependencias_ubicacion(self):
+        """Reproduce las reglas que ya tenía definidas el proyecto QGIS
+        para estos 3 campos (mismo 'valor por defecto' condicional que
+        vimos en el formulario de atributos):
+        - Exterior e Interior son excluyentes (marcar uno desmarca el otro).
+        - Marcar "Ubicar exterior" implica que el contador SÍ está dentro
+          (Interior=True) pero se localiza/lee desde fuera, así que
+          también desmarca Exterior.
+        - Marcar Exterior desmarca tanto Interior como Ubicar exterior.
+        """
+        cb_ext = self.inputs["Exterior"]
+        cb_int = self.inputs["Interior"]
+        cb_ubi = self.inputs["UbicarExte"]
+        self._actualizando_ubicacion = False
+
+        def _al_cambiar(campo):
+            def _handler(_inst, activo):
+                if self._actualizando_ubicacion or not activo:
+                    return
+                self._actualizando_ubicacion = True
+                try:
+                    if campo == "Exterior":
+                        cb_int.active = False
+                        cb_ubi.active = False
+                    elif campo == "Interior":
+                        cb_ext.active = False
+                    elif campo == "UbicarExte":
+                        cb_ext.active = False
+                        cb_int.active = True
+                finally:
+                    self._actualizando_ubicacion = False
+            return _handler
+
+        cb_ext.bind(active=_al_cambiar("Exterior"))
+        cb_int.bind(active=_al_cambiar("Interior"))
+        cb_ubi.bind(active=_al_cambiar("UbicarExte"))
 
     def _foto(self, campo, etiqueta):
         cont = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(150), spacing=dp(4))
@@ -922,39 +1019,24 @@ class PantallaFicha(Screen):
                 self.estado.text = "No se recibio la foto (cancelada)."
         Clock.schedule_once(actualizar, 0)
 
-    def capturar_gps(self, *_):
-        if gps is None:
-            self.estado.text = "GPS no disponible en este dispositivo/emulador."
-            return
-        try:
-            gps.configure(on_location=self._gps_recibido)
-            gps.start(minTime=1000, minDistance=0)
-            self.estado.text = "Buscando senal GPS..."
-        except Exception as e:
-            self.estado.text = f"Error de GPS: {e}"
-
-    def _gps_recibido(self, **kwargs):
-        lat = kwargs.get("lat")
-        lon = kwargs.get("lon")
-        if lat is not None and lon is not None:
-            def actualizar(_dt):
-                self.inputs["Latitud"].text = f"{lat}"
-                self.inputs["Longitud"].text = f"{lon}"
-                self.estado.text = "GPS capturado."
-            Clock.schedule_once(actualizar, 0)
-            try:
-                gps.stop()
-            except Exception:
-                pass
-
     def guardar(self, *_):
         if not self.punto:
+            return
+        # Misma restricción que ya tenía definida el proyecto QGIS: un
+        # contador no puede ser Exterior e Interior a la vez. Con las
+        # casillas conectadas (ver _conectar_dependencias_ubicacion) esto
+        # no debería llegar a pasar, pero se deja como red de seguridad.
+        if self.inputs["Exterior"].active and self.inputs["Interior"].active:
+            self.estado.text = "Un contador no puede ser Exterior e Interior a la vez."
             return
         for campo, widget in self.inputs.items():
             if isinstance(widget, CheckBox):
                 self.punto[campo] = widget.active
             elif isinstance(widget, Spinner):
-                self.punto[campo] = widget.text if widget.text != widget.values[0] else ""
+                texto = widget.text if widget.text != widget.values[0] else ""
+                if campo == "Calibre":
+                    texto = CALIBRE_VALORES.get(texto, texto)
+                self.punto[campo] = texto
             elif isinstance(widget, TextInput):
                 self.punto[campo] = widget.text
         self.punto["Completado"] = True
@@ -1067,14 +1149,12 @@ class PantallaMapa(Screen):
             self.mapview.orientar_al_norte()
 
     def _alternar_rotacion(self):
-        if self.mapview is None:
-            return
-        self._rotacion_activa = not self._rotacion_activa
-        self.mapview.activar_rotacion(self._rotacion_activa)
-        self.info.text = (
-            "Rotación activada: pellizca con 2 dedos para girar el mapa."
-            if self._rotacion_activa else "Rotación desactivada."
-        )
+        # Pausado por ahora: con las capas de fondo otra vez en modo
+        # "window" (para no romper el dibujo de parcelas/límites, ver
+        # nota en on_pre_enter), rotar solo giraría la foto de fondo y
+        # dejaría las parcelas/marcadores/etiquetas fijos -> peor que no
+        # rotar nada. Se retoma cuando se pueda validar bien en el móvil.
+        self.info.text = "La rotación está pausada por ahora (ver nota del chat)."
 
     def on_pre_enter(self):
         # Quita solo el mapa anterior (mantiene cruceta/botón que ya están añadidos una vez)
@@ -1229,7 +1309,7 @@ class PantallaMapa(Screen):
                 capas_fondo = json.load(f)
             if capas_fondo:
                 self.capa_fondo_widget = CapaVectorFondo(capas_fondo)
-                self.mapview.add_layer(self.capa_fondo_widget, mode="scatter")
+                self.mapview.add_layer(self.capa_fondo_widget, mode="window")
         except Exception as e:
             _log_debug(f"EXCEPCION al cargar capa de fondo en el mapa: {e!r}")
 
@@ -1447,7 +1527,7 @@ class CapaVectorFondo:
 
                             puntos_xy = []
                             for lat, lon in puntos_anillo:
-                                x, y = mapa.get_local_xy_from(lat, lon, mapa.zoom)
+                                x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
                                 puntos_xy.extend([x, y])
                             if len(puntos_xy) < 4:
                                 continue
@@ -1476,7 +1556,7 @@ class CapaVectorFondo:
                                 if (lat < v_lat_min or lat > v_lat_max or
                                         lon < v_lon_min or lon > v_lon_max):
                                     continue
-                                x, y = mapa.get_local_xy_from(lat, lon, mapa.zoom)
+                                x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
                                 textura = self._textura_para(texto, estilo)
                                 w, h = textura.size
                                 if not _hueco_libre(x, y, w, h):

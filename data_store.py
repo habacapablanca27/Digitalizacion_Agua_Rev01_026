@@ -63,7 +63,7 @@ CAMPOS_PADRON = ["NFijo", "Direccion", "NOrden", "CATVia", "RefCatastral", "Lat"
 # Campos que rellena el operario en campo
 CAMPOS_CAMPO = [
     "TipEdifica", "NContador", "NSerieCont", "ModRadio", "MarcaModel",
-    "Lectura", "FecLectura", "Alojamiento", "Calibre", "Diametros",
+    "Lectura", "FecLectura", "HoraLectur", "FecHoraLec", "Alojamiento", "Calibre", "Diametros",
     "TipUsoComu", "Exterior", "Interior", "UbicarExte", "ValAcometi",
     "Individual", "LlaveContador", "CambioTapa", "SeBorra",
     "Latitud", "Longitud", "Observaciones",
