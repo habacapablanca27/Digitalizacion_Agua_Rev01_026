@@ -1032,6 +1032,24 @@ class PantallaMapa(Screen):
         b_zoom_menos.bind(on_release=lambda *_: self._cambiar_zoom(-1))
         self.contenedor_mapa.add_widget(b_zoom_menos)
 
+        ruta_icono_norte = os.path.join(os.path.dirname(__file__), "assets", "icono_norte.png")
+        ruta_icono_rotar = os.path.join(os.path.dirname(__file__), "assets", "icono_rotar.png")
+
+        b_norte = Button(
+            background_normal=ruta_icono_norte, background_down=ruta_icono_norte, border=(0, 0, 0, 0),
+            size_hint=(None, None), size=(dp(48), dp(48)), pos_hint={"x": 0.02, "y": 0.14},
+        )
+        b_norte.bind(on_release=lambda *_: self._orientar_al_norte())
+        self.contenedor_mapa.add_widget(b_norte)
+
+        self._rotacion_activa = False
+        b_rotar = Button(
+            background_normal=ruta_icono_rotar, background_down=ruta_icono_rotar, border=(0, 0, 0, 0),
+            size_hint=(None, None), size=(dp(48), dp(48)), pos_hint={"x": 0.02, "y": 0.03},
+        )
+        b_rotar.bind(on_release=lambda *_: self._alternar_rotacion())
+        self.contenedor_mapa.add_widget(b_rotar)
+
         self.info = Label(text="", size_hint_y=None, height=dp(28))
         self.root_box.add_widget(self.info)
         self.add_widget(self.root_box)
@@ -1043,6 +1061,20 @@ class PantallaMapa(Screen):
         maximo = self.mapview.map_source.max_zoom
         minimo = self.mapview.map_source.min_zoom
         self.mapview.zoom = max(minimo, min(maximo, nuevo_zoom))
+
+    def _orientar_al_norte(self):
+        if self.mapview is not None:
+            self.mapview.orientar_al_norte()
+
+    def _alternar_rotacion(self):
+        if self.mapview is None:
+            return
+        self._rotacion_activa = not self._rotacion_activa
+        self.mapview.activar_rotacion(self._rotacion_activa)
+        self.info.text = (
+            "Rotación activada: pellizca con 2 dedos para girar el mapa."
+            if self._rotacion_activa else "Rotación desactivada."
+        )
 
     def on_pre_enter(self):
         # Quita solo el mapa anterior (mantiene cruceta/botón que ya están añadidos una vez)
@@ -1079,6 +1111,25 @@ class PantallaMapa(Screen):
                         self.fuente_superpuesta, self.opacidad_superpuesta, size, x, y, zoom
                     )
                 self.tile_map_set(x, y, True)
+
+            def get_local_xy_from(self, lat, lon, zoom):
+                """Como get_window_xy_from, pero en coordenadas LOCALES del
+                'scatter' (antes de aplicar zoom/rotación), que es lo que
+                necesitan las capas añadidas con mode='scatter' para que
+                giren en sincronía con el mapa al rotar (si se usaran las
+                coordenadas de pantalla normales, quedarían en el sitio
+                equivocado en cuanto se rota, porque esas ya llevan el giro
+                aplicado una vez y el scatter se lo aplicaría una segunda)."""
+                ms = self.map_source
+                x = ms.get_x(zoom, lon) + self.delta_x
+                y = ms.get_y(zoom, lat) + self.delta_y
+                return x, y
+
+            def activar_rotacion(self, activar):
+                self._scatter.do_rotation = activar
+
+            def orientar_al_norte(self):
+                self._scatter.rotation = 0
 
         self._MapViewConSuperposicion = MapViewConSuperposicion
 
@@ -1178,7 +1229,7 @@ class PantallaMapa(Screen):
                 capas_fondo = json.load(f)
             if capas_fondo:
                 self.capa_fondo_widget = CapaVectorFondo(capas_fondo)
-                self.mapview.add_layer(self.capa_fondo_widget, mode="window")
+                self.mapview.add_layer(self.capa_fondo_widget, mode="scatter")
         except Exception as e:
             _log_debug(f"EXCEPCION al cargar capa de fondo en el mapa: {e!r}")
 
@@ -1396,7 +1447,7 @@ class CapaVectorFondo:
 
                             puntos_xy = []
                             for lat, lon in puntos_anillo:
-                                x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
+                                x, y = mapa.get_local_xy_from(lat, lon, mapa.zoom)
                                 puntos_xy.extend([x, y])
                             if len(puntos_xy) < 4:
                                 continue
@@ -1425,7 +1476,7 @@ class CapaVectorFondo:
                                 if (lat < v_lat_min or lat > v_lat_max or
                                         lon < v_lon_min or lon > v_lon_max):
                                     continue
-                                x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
+                                x, y = mapa.get_local_xy_from(lat, lon, mapa.zoom)
                                 textura = self._textura_para(texto, estilo)
                                 w, h = textura.size
                                 if not _hueco_libre(x, y, w, h):

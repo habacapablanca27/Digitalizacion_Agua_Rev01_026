@@ -291,6 +291,24 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
             anillos.append([[lat, lon]])
             if texto:
                 etiquetas.append([texto, lat, lon])
+        elif tipo == "polyline":
+            # Una línea larga (ej. el límite de todo el municipio) no
+            # cabe entera en pantalla: si solo se pone UNA etiqueta en
+            # el centro de toda la línea, puede quedar muy lejos de la
+            # zona que se está mirando y no se ve nunca. Se repite cada
+            # ~25 vértices, como hace QGIS con las etiquetas "a lo largo
+            # de la línea".
+            partes = list(shape.parts) + [len(puntos)]
+            for i in range(len(partes) - 1):
+                trozo = puntos[partes[i]:partes[i + 1]]
+                anillo = [list(convertir(x, y)) for x, y in trozo]
+                if len(anillo) >= 2:
+                    anillo = _simplificar_anillo(anillo)
+                    anillos.append(anillo)
+                    if texto:
+                        paso = 25
+                        for j in range(0, len(anillo), paso):
+                            etiquetas.append([texto, anillo[j][0], anillo[j][1]])
         else:
             partes = list(shape.parts) + [len(puntos)]
             ya_puesta_etiqueta = False
@@ -436,8 +454,16 @@ def leer_puntos_desde_carpeta(carpeta, nombre_shp=None):
                 lat, lon = _utm_a_latlon(x, y, zona, hemisferio_norte)
             else:
                 lon, lat = x, y
+            # "Lat"/"Lon" (WGS84) son solo para posicionar el marcador en
+            # el mapa (la librería del mapa los necesita en grados). Pero
+            # el campo "Latitud"/"Longitud" que se ve en la ficha debe
+            # coincidir con lo que el cliente ya ve en QGIS/QField para
+            # este mismo punto -- que está en la proyección original del
+            # Shapefile (normalmente UTM, ej. EPSG:25830), no en grados.
             punto["Lat"] = f"{lat:.7f}"
             punto["Lon"] = f"{lon:.7f}"
+            punto["Latitud"] = f"{y:.4f}"
+            punto["Longitud"] = f"{x:.4f}"
 
         if punto.get("Lectura"):
             punto["Completado"] = True
