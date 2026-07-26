@@ -340,9 +340,11 @@ class PantallaImportar(Screen):
         try:
             from importar_shapefile import leer_puntos_desde_carpeta
             nuevos = leer_puntos_desde_carpeta(self._carpeta_zip_actual, nombre_shp=capa["archivo_shp"])
+            _log_debug(f"Capa de puntos '{capa['nombre']}' leida: {len(nuevos)} puntos")
             self._fusionar_e_importar(nuevos)
             restantes = [c for c in self._todas_las_capas_disponibles
                          if c["archivo_shp"] != capa["archivo_shp"]]
+            _log_debug(f"Capas de fondo disponibles para elegir: {[c['nombre'] for c in restantes]}")
             if restantes:
                 self._mostrar_popup_capas_fondo(restantes, self._carpeta_zip_actual)
         except Exception as e:
@@ -431,10 +433,21 @@ class PantallaImportar(Screen):
         if not capas_elegidas:
             return
         self.info.text = "Cargando capas de fondo..."
+        _log_debug(f"Cargando capas de fondo elegidas: {[c['nombre'] for c in capas_elegidas]}")
         try:
             from importar_shapefile import guardar_capas_fondo
             ruta_salida = os.path.join(ds.data_dir(), "capas_fondo.json")
-            guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida)
+            resultado = guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida)
+            for capa in resultado:
+                _log_debug(
+                    f"  Capa '{capa['nombre']}': tipo={capa['tipo']}, "
+                    f"anillos={len(capa['anillos'])}, trazos={capa['trazos']}, "
+                    f"etiquetas={len(capa.get('etiquetas', []))}"
+                )
+            nombres_guardados = {c["nombre"] for c in resultado}
+            for capa in capas_elegidas:
+                if capa["nombre"] not in nombres_guardados:
+                    _log_debug(f"  AVISO: la capa '{capa['nombre']}' se eligio pero no se guardo (sin geometria valida?)")
             self.info.text = "Capas de fondo listas. Ya se verán en el mapa."
         except Exception as e:
             _log_debug(f"EXCEPCION al cargar capas de fondo: {e!r}")
@@ -1303,10 +1316,16 @@ class PantallaMapa(Screen):
         import json
         ruta = os.path.join(ds.data_dir(), "capas_fondo.json")
         if not os.path.exists(ruta):
+            _log_debug("No existe capas_fondo.json (no se ha importado ninguna capa de fondo todavia)")
             return
         try:
             with open(ruta, "r", encoding="utf-8") as f:
                 capas_fondo = json.load(f)
+            _log_debug(
+                "Cargando capas_fondo.json en el mapa: " +
+                ", ".join(f"{c['nombre']}({len(c['anillos'])} anillos, activa={c.get('activa', True)})"
+                          for c in capas_fondo)
+            )
             if capas_fondo:
                 self.capa_fondo_widget = CapaVectorFondo(capas_fondo)
                 self.mapview.add_layer(self.capa_fondo_widget, mode="window")
