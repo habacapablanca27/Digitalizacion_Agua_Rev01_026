@@ -75,7 +75,7 @@ from kivy.uix.popup import Popup
 from kivy.uix.image import Image, AsyncImage
 from kivy.metrics import dp
 from kivy.clock import Clock
-from kivy.properties import ObjectProperty, NumericProperty
+from kivy.properties import ObjectProperty, NumericProperty, BooleanProperty
 
 import data_store as ds
 from export_shapefile import exportar_shapefile
@@ -809,9 +809,15 @@ class PantallaFicha(Screen):
         self.foto_widgets = {}
         self.estado.text = ""
 
-        self._solo_lectura("Nº Fijo", punto.get("NFijo", ""))
-        self._solo_lectura("Dirección", punto.get("Direccion", ""))
-        self._solo_lectura("Ref. Catastral", punto.get("RefCatastral", ""))
+        # Antes estos 3 campos eran solo-lectura (venían siempre del
+        # Padrón importado). Los puntos creados a mano con "Añadir punto
+        # aquí" no tienen padrón detrás, así que se quedaban vacíos y sin
+        # forma de rellenarlos. Ahora son editables para todos los puntos
+        # (los importados ya vienen con el valor puesto, y se pueden
+        # corregir si hiciera falta).
+        self._texto("NFijo", "Nº Fijo")
+        self._texto("Direccion", "Dirección")
+        self._texto("RefCatastral", "Ref. Catastral")
 
         self._spinner("TipEdifica", "Tipo de edificación", TIPOS_EDIF)
         self._texto("NContador", "Nº Contador")
@@ -1194,15 +1200,22 @@ class PantallaMapa(Screen):
         class MapViewConSuperposicion(MapView):
             fuente_superpuesta = ObjectProperty(None, allownone=True)
             opacidad_superpuesta = NumericProperty(0.35)
+            # Cuando está activo, no se piden/pintan teselas de ninguna
+            # fuente (ni base ni superpuesta) -- deja el fondo en blanco
+            # para poder ver, sin ambigüedad, qué capas de fondo (parcelas,
+            # límites, red de abastecimiento...) se dibujan de verdad y
+            # cuáles no, sin la foto aérea de por medio despistando.
+            sin_fondo = BooleanProperty(False)
 
             def load_tile(self, x, y, size, zoom):
                 if self.tile_in_tile_map(x, y) or zoom != self._zoom:
                     return
-                self.load_tile_for_source(self.map_source, 1.0, size, x, y, zoom)
-                if self.fuente_superpuesta is not None:
-                    self.load_tile_for_source(
-                        self.fuente_superpuesta, self.opacidad_superpuesta, size, x, y, zoom
-                    )
+                if not self.sin_fondo:
+                    self.load_tile_for_source(self.map_source, 1.0, size, x, y, zoom)
+                    if self.fuente_superpuesta is not None:
+                        self.load_tile_for_source(
+                            self.fuente_superpuesta, self.opacidad_superpuesta, size, x, y, zoom
+                        )
                 self.tile_map_set(x, y, True)
 
             def get_local_xy_from(self, lat, lon, zoom):
@@ -1244,9 +1257,13 @@ class PantallaMapa(Screen):
             attribution="PNOA cedido por © Instituto Geográfico Nacional de España",
         )
         self.fuentes_mapa = {
-            "Calles (OpenStreetMap)": {"base": fuente_osm, "superpuesta": None},
-            "Satélite (PNOA - IGN)": {"base": fuente_pnoa, "superpuesta": None},
-            "Híbrida (PNOA + calles 35%)": {"base": fuente_pnoa, "superpuesta": fuente_osm},
+            "Calles (OpenStreetMap)": {"base": fuente_osm, "superpuesta": None, "sin_fondo": False},
+            "Satélite (PNOA - IGN)": {"base": fuente_pnoa, "superpuesta": None, "sin_fondo": False},
+            "Híbrida (PNOA + calles 35%)": {"base": fuente_pnoa, "superpuesta": fuente_osm, "sin_fondo": False},
+            # Reutiliza fuente_osm solo para los límites de zoom (min/max)
+            # que usan los botones +/- ; con sin_fondo=True nunca se llega
+            # a pedir ni pintar ninguna tesela suya.
+            "Sin mapa de fondo": {"base": fuente_osm, "superpuesta": None, "sin_fondo": True},
         }
         fuente_guardada = getattr(self, "_nombre_fuente_actual", "Calles (OpenStreetMap)")
         fuente_inicial = self.fuentes_mapa.get(fuente_guardada, self.fuentes_mapa["Calles (OpenStreetMap)"])
@@ -1272,6 +1289,7 @@ class PantallaMapa(Screen):
             lat=lat_centro, lon=lon_centro, zoom=zoom_inicial,
             map_source=fuente_inicial["base"],
             fuente_superpuesta=fuente_inicial["superpuesta"],
+            sin_fondo=fuente_inicial.get("sin_fondo", False),
         )
         # index=len(children) inserta al final de la lista de hijos, que en Kivy
         # es la posición que se dibuja PRIMERO (más al fondo). Así el mapa queda
@@ -1357,6 +1375,7 @@ class PantallaMapa(Screen):
                 fuente = self.fuentes_mapa[nombre_fuente]
                 self.mapview.map_source = fuente["base"]
                 self.mapview.fuente_superpuesta = fuente["superpuesta"]
+                self.mapview.sin_fondo = fuente.get("sin_fondo", False)
                 # Las teselas ya cargadas se guardaron para la fuente
                 # anterior; hay que tirarlas para que se vuelvan a pedir
                 # con la fuente/superposición nueva.
@@ -1452,7 +1471,7 @@ class CapaVectorFondo:
 
     def __new__(cls, capas_fondo):
         from kivy_garden.mapview import MapLayer
-        from kivy.graphics import Color, Line, Rectangle
+        from kivy.graphics import Color, Line, Rectangle, Ellipse
         from kivy.core.text import Label as CoreLabel
 
         MAX_PUNTOS_POR_ANILLO = 120
@@ -1534,6 +1553,7 @@ class CapaVectorFondo:
                             continue
                         trazos = capa.get("trazos") or [(*capa.get("color", (0.8, 0.2, 0.2)), 1.1)]
                         cerrado = capa["tipo"] == "polygon"
+                        es_punto = capa["tipo"] == "point"
                         for anillo, bb in zip(capa["anillos"], capa["anillos_bbox"]):
                             a_lat_min, a_lon_min, a_lat_max, a_lon_max = bb
                             # Descarta el anillo si su caja no toca la
@@ -1552,6 +1572,24 @@ class CapaVectorFondo:
                             for lat, lon in puntos_anillo:
                                 x, y = mapa.get_window_xy_from(lat, lon, mapa.zoom)
                                 puntos_xy.extend([x, y])
+
+                            # Las capas de tipo "point" (ej. válvulas/arquetas
+                            # de una capa de red) traen "anillos" de un solo
+                            # punto: [[lat, lon]]. Antes esto se descartaba
+                            # siempre (un Line necesita al menos 2 puntos, es
+                            # decir 4 valores x,y), así que estas capas nunca
+                            # llegaban a pintar nada, aunque estuvieran
+                            # activas — se dibujan aquí como un círculo.
+                            if es_punto:
+                                if len(puntos_xy) < 2:
+                                    continue
+                                x, y = puntos_xy[0], puntos_xy[1]
+                                for r, g, b, ancho_mm in trazos:
+                                    Color(r, g, b, 0.9)
+                                    radio = max(4, ancho_mm * 3)
+                                    Ellipse(pos=(x - radio, y - radio), size=(radio * 2, radio * 2))
+                                continue
+
                             if len(puntos_xy) < 4:
                                 continue
 
