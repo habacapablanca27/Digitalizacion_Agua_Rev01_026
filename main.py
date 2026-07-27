@@ -1273,7 +1273,11 @@ class PantallaMapa(Screen):
             map_source=fuente_inicial["base"],
             fuente_superpuesta=fuente_inicial["superpuesta"],
         )
-        self.contenedor_mapa.add_widget(self.mapview, index=2)  # detrás de cruceta/botón
+        # index=len(children) inserta al final de la lista de hijos, que en Kivy
+        # es la posición que se dibuja PRIMERO (más al fondo). Así el mapa queda
+        # siempre detrás de la cruceta y los botones, sin importar en qué orden
+        # se hayan creado esos widgets en __init__.
+        self.contenedor_mapa.add_widget(self.mapview, index=len(self.contenedor_mapa.children))
 
         # Antes se añadía un MapMarker por punto (hasta 386 widgets a la vez),
         # lo que iba muy lento y "robaba" el gesto de pellizco para zoom.
