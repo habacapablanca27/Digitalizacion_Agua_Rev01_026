@@ -14,9 +14,24 @@ import re
 import math
 import zipfile
 import shutil
+import time
 import shapefile  # pyshp
 
 import data_store as ds
+
+
+def _log_debug(mensaje):
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        carpeta = PythonActivity.mActivity.getExternalFilesDir(None).getAbsolutePath()
+    except Exception:
+        carpeta = os.path.expanduser("~")
+    try:
+        with open(os.path.join(carpeta, "debug_log.txt"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " - [shapefile] " + str(mensaje) + "\n")
+    except Exception:
+        pass
 
 # Mapeo de campos típicos de un shapefile de contadores (QField/QGIS) a
 # nuestro esquema interno. Las claves son variantes habituales de nombre
@@ -226,7 +241,7 @@ def _simplificar_anillo(anillo, max_puntos=40):
     return reducido
 
 
-def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=None):
+def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=None, info_utm_respaldo=None):
     """Lee CUALQUIER shapefile (puntos, líneas o polígonos) y devuelve sus
     geometrías ya convertidas a Lat/Lon, para dibujarlas como capa de fondo
     en el mapa (parcelas, construcciones, límites, etc.).
@@ -235,6 +250,10 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
     esa capa, ej. "DIRECCION"), también devuelve una lista de etiquetas
     de texto con su posición (centro de cada polígono/línea), para poder
     escribirlas en el mapa igual que QGIS.
+
+    'info_utm_respaldo': proyección (zona, hemisferio) a usar si ESTA capa
+    en concreto no trae su propio archivo .prj (algunos Shapefiles del
+    zip pueden no traerlo aunque las demás capas del mismo proyecto sí).
 
     max_anillos: límite de seguridad para no cargar capas gigantes que
     harían el mapa lentísimo en el móvil (con eso sobra para un municipio).
@@ -245,6 +264,12 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
 
     base = ruta_shp[:-4]
     info_utm = _leer_zona_utm_desde_prj(base + ".prj")
+    if info_utm is None and info_utm_respaldo is not None:
+        info_utm = info_utm_respaldo
+    _log_debug(
+        f"leer_geometria_capa('{nombre_shp}'): .prj propio encontrado={os.path.exists(base + '.prj')}, "
+        f"info_utm usado={info_utm}"
+    )
 
     sf = shapefile.Reader(ruta_shp)
     tipo_geom = sf.shapeTypeName.lower()
@@ -272,10 +297,19 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
 
     anillos = []
     etiquetas = []
+    _muestra_registrada = False
     for shape, record in iterador:
         puntos = shape.points
         if not puntos:
             continue
+
+        if not _muestra_registrada:
+            lat_m, lon_m = convertir(*puntos[0])
+            _log_debug(
+                f"  '{nombre_shp}': primer punto bruto={puntos[0]} -> "
+                f"convertido lat={lat_m}, lon={lon_m}"
+            )
+            _muestra_registrada = True
 
         texto = None
         if record is not None:
@@ -329,6 +363,23 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
     return {"tipo": tipo, "anillos": anillos, "etiquetas": etiquetas}
 
 
+def _buscar_prj_de_respaldo(carpeta):
+    """Si una capa concreta no trae su propio .prj, se usa la proyección
+    de CUALQUIER OTRO .prj que haya en la carpeta -- en la práctica,
+    todos los Shapefiles de un mismo proyecto QGIS casi siempre están en
+    la misma proyección, así que esto evita que una capa sin .prj propio
+    (como nos pasó con la de abastecimiento) se acabe dibujando en un
+    sitio disparatado del mapa (coordenadas UTM tratadas como si fueran
+    grados)."""
+    for raiz, _dirs, archivos in os.walk(carpeta):
+        for a in archivos:
+            if a.lower().endswith(".prj"):
+                info = _leer_zona_utm_desde_prj(os.path.join(raiz, a))
+                if info:
+                    return info
+    return None
+
+
 def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_capa=800):
     """Lee las capas de fondo QUE EL USUARIO ELIGIÓ (lista de dicts con
     'nombre' y 'archivo_shp') y las guarda en un JSON ligero para
@@ -364,13 +415,16 @@ def guardar_capas_fondo(carpeta, capas_elegidas, ruta_salida, max_anillos_por_ca
         except Exception:
             campos_etiqueta = {}
 
+    info_utm_respaldo = _buscar_prj_de_respaldo(carpeta)
+    _log_debug(f"guardar_capas_fondo: proyeccion de respaldo detectada = {info_utm_respaldo}")
+
     resultado = []
     for i, capa in enumerate(capas_elegidas):
         info_etiqueta = campos_etiqueta.get(capa["nombre"])
         campo_etiqueta = info_etiqueta["campo"] if info_etiqueta else None
         geom = leer_geometria_capa(
             carpeta, capa["archivo_shp"], max_anillos=max_anillos_por_capa,
-            campo_etiqueta=campo_etiqueta,
+            campo_etiqueta=campo_etiqueta, info_utm_respaldo=info_utm_respaldo,
         )
         if not geom or not geom["anillos"]:
             continue
