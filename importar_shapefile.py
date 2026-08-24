@@ -279,6 +279,7 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
         tipo = "polyline"
     else:
         tipo = "point"
+    _log_debug(f"  '{nombre_shp}': tipo de geometría detectado en el .shp = '{sf.shapeTypeName}' -> clasificado como '{tipo}'")
 
     def convertir(x, y):
         if info_utm:
@@ -295,10 +296,30 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
     else:
         iterador = ((shape, None) for shape in sf.iterShapes())
 
+    # Antes, al llegar a 'max_anillos' se paraba en seco -- eso significa
+    # quedarse con los primeros N features en el orden en que están
+    # guardados en el archivo, que casi nunca es un orden geográfico
+    # (suele ser por ID de creación). En una capa grande (parcelas,
+    # red de abastecimiento) eso deja el municipio entero vacío salvo
+    # por la zona donde cayeran esos primeros N por casualidad. Ahora
+    # se coge 1 de cada 'paso_muestreo' features, repartido a lo largo
+    # de TODO el archivo, para que la muestra cubra todo el municipio
+    # en vez de amontonarse en una esquina.
+    total_features = len(sf)
+    paso_muestreo = max(1, total_features // max_anillos) if total_features > max_anillos else 1
+    if paso_muestreo > 1:
+        _log_debug(
+            f"  '{nombre_shp}': {total_features} features > límite {max_anillos} -> "
+            f"muestreo repartido cogiendo 1 de cada {paso_muestreo}"
+        )
+
     anillos = []
     etiquetas = []
     _muestra_registrada = False
-    for shape, record in iterador:
+    for idx_feature, (shape, record) in enumerate(iterador):
+        if paso_muestreo > 1 and idx_feature % paso_muestreo != 0:
+            continue
+
         puntos = shape.points
         if not puntos:
             continue
@@ -357,7 +378,11 @@ def leer_geometria_capa(carpeta, nombre_shp, max_anillos=1500, campo_etiqueta=No
                         lon_c = sum(p[1] for p in anillo) / len(anillo)
                         etiquetas.append([texto, lat_c, lon_c])
                         ya_puesta_etiqueta = True
-        if len(anillos) >= max_anillos:
+        # Tope de emergencia: con el muestreo repartido ya no debería
+        # hacer falta, pero por si un único feature (ej. un multipolígono
+        # con cientos de partes) dispara el conteo, se mantiene un límite
+        # duro para no reventar memoria en el móvil.
+        if len(anillos) >= max_anillos * 3:
             break
 
     return {"tipo": tipo, "anillos": anillos, "etiquetas": etiquetas}

@@ -85,7 +85,12 @@ Builder.load_string(
     auto_bring_to_front: False
     do_rotation: False
     scale_min: 0.2
-    scale_max: 3.
+    # Antes: 3. -- ese tope no dejaba margen para seguir ampliando una
+    # vez llegado al zoom nativo máximo de las teselas (19). Con 8. hay
+    # sitio para ~3 niveles extra de "zoom digital" (misma imagen, más
+    # grande) antes de toparse con el límite, igual que hacen QField o
+    # Google Maps al pasarse del detalle real disponible.
+    scale_max: 8.
 
 <MapMarkerPopup>:
     RelativeLayout:
@@ -672,7 +677,16 @@ class MapView(Widget):
                 zoom, scale = self._touch_zoom
                 cur_zoom = self.zoom
                 cur_scale = self._scale
-                if cur_zoom < zoom or cur_scale < scale:
+                en_zoom_maximo_nativo = self._zoom >= self.map_source.max_zoom
+                if en_zoom_maximo_nativo and cur_scale >= scale:
+                    # Ya no hay más teselas de detalle real que pedir (se
+                    # llegó al máximo del proveedor de mapas). Si el
+                    # usuario amplió más de la cuenta (zoom digital), se
+                    # deja tal cual lo dejó -- si no, este mismo bloque
+                    # lo devolvía de golpe a x2 al soltar los dedos, dando
+                    # la sensación de que "retrocede" sola.
+                    pass
+                elif cur_zoom < zoom or cur_scale < scale:
                     self.animated_diff_scale_at(1.0 - cur_scale, *touch.pos)
                 elif cur_zoom > zoom or cur_scale > scale:
                     self.animated_diff_scale_at(2.0 - cur_scale, *touch.pos)

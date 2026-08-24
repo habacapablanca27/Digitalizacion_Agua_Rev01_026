@@ -1158,9 +1158,22 @@ class PantallaMapa(Screen):
     def _cambiar_zoom(self, delta):
         if self.mapview is None:
             return
-        nuevo_zoom = self.mapview.zoom + delta
         maximo = self.mapview.map_source.max_zoom
         minimo = self.mapview.map_source.min_zoom
+
+        # Ya no queda más nivel de zoom "real" (teselas) por encima --
+        # a partir de aquí el botón +/- amplía/reduce digitalmente
+        # (misma imagen, más grande/pequeña), igual que seguir
+        # pellizcando por encima del máximo.
+        en_zoom_maximo_nativo = self.mapview.zoom >= maximo
+        if delta > 0 and en_zoom_maximo_nativo:
+            self.mapview.animated_diff_scale_at(0.5, self.mapview.center_x, self.mapview.center_y)
+            return
+        if delta < 0 and en_zoom_maximo_nativo and self.mapview.scale > 1.0:
+            self.mapview.animated_diff_scale_at(-0.5, self.mapview.center_x, self.mapview.center_y)
+            return
+
+        nuevo_zoom = self.mapview.zoom + delta
         self.mapview.zoom = max(minimo, min(maximo, nuevo_zoom))
 
     def _orientar_al_norte(self):
