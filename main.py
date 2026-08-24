@@ -1503,6 +1503,7 @@ class CapaVectorFondo:
                 # panel de capas de la pantalla del mapa.
                 self.capas = capas
                 self._texturas_etiquetas = {}  # (texto,color,tam) -> textura (cache)
+                self._ultimo_redibujado_completo = 0.0
                 for capa in self.capas:
                     capa.setdefault("activa", True)
                     if "anillos_bbox" not in capa:
@@ -1539,6 +1540,24 @@ class CapaVectorFondo:
                 mapa = self.parent
                 if mapa is None:
                     return
+
+                # Recalcular y volver a dibujar TODO (líneas + etiquetas de
+                # todas las capas activas) en cada fotograma de un arrastre
+                # o pellizco era el principal causante de la lentitud al
+                # mover el mapa -- Kivy llama a reposition() en cada frame
+                # del gesto, no solo al soltar. Mientras hay un dedo tocando
+                # la pantalla (mapa._touch_count > 0) nos quedamos con el
+                # último dibujo (que se queda quieto un instante mientras
+                # el mapa se desliza debajo) y solo se refresca cada 250ms
+                # como mucho, para que no se quede muy desfasado en
+                # arrastres largos. En cuanto se levanta el dedo, este
+                # mismo método se vuelve a llamar y como _touch_count ya
+                # es 0, se hace el redibujado completo y correcto.
+                ahora = _time.time()
+                if mapa._touch_count > 0 and (ahora - self._ultimo_redibujado_completo) < 0.25:
+                    return
+                self._ultimo_redibujado_completo = ahora
+
                 self.canvas.clear()
                 bbox = mapa.get_bbox()
                 v_lat1, v_lon1, v_lat2, v_lon2 = bbox

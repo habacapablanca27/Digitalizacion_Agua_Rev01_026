@@ -6,6 +6,7 @@ Layer that support point clustering
 
 from math import atan, exp, floor, log, pi, sin, sqrt
 from os.path import dirname, join
+from time import time as _time_now
 
 from kivy.lang import Builder
 from kivy.metrics import dp
@@ -398,6 +399,7 @@ class ClusteredMarkerLayer(MapLayer):
     def __init__(self, **kwargs):
         self.cluster = None
         self.cluster_markers = []
+        self._ultimo_redibujado_completo = 0.0
         super().__init__(**kwargs)
 
     def add_marker(self, lon, lat, cls=MapMarker, options=None):
@@ -413,8 +415,20 @@ class ClusteredMarkerLayer(MapLayer):
     def reposition(self):
         if self.cluster is None:
             self.build_cluster()
-        margin = dp(48)
         mapview = self.parent
+        if mapview is None:
+            return
+
+        # Mismo motivo que en CapaVectorFondo: reposition() se llama en
+        # cada fotograma de un arrastre/pellizco, y volver a consultar el
+        # cluster + quitar y volver a añadir cada marcador visible en cada
+        # frame es trabajo de sobra mientras el dedo sigue en pantalla.
+        ahora = _time_now()
+        if mapview._touch_count > 0 and (ahora - self._ultimo_redibujado_completo) < 0.25:
+            return
+        self._ultimo_redibujado_completo = ahora
+
+        margin = dp(48)
         set_marker_position = self.set_marker_position
         bbox = mapview.get_bbox(margin)
         bbox = (bbox[1], bbox[0], bbox[3], bbox[2])
