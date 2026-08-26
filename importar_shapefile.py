@@ -148,6 +148,53 @@ def _utm_a_latlon(easting, northing, zona, hemisferio_norte=True):
     return math.degrees(lat), math.degrees(lon)
 
 
+def _latlon_a_utm(lat, lon, zona=30):
+    """Conversión WGS84 -> UTM (fórmulas estándar de Snyder), inversa de
+    _utm_a_latlon. Hacía falta para poder guardar coordenadas UTM en
+    puntos creados a mano (sin Shapefile de origen), que hasta ahora se
+    guardaban directamente en grados -- rompiendo la norma del proyecto
+    de que 'Latitud'/'Longitud' en la ficha son siempre UTM, igual que
+    en QField."""
+    a = 6378137.0
+    f = 1 / 298.257223563
+    k0 = 0.9996
+    e2 = f * (2 - f)
+    e_p2 = e2 / (1 - e2)
+
+    phi = math.radians(lat)
+    meridiano_central = math.radians(-183 + zona * 6)
+    lam = math.radians(lon) - meridiano_central
+
+    n = a / math.sqrt(1 - e2 * math.sin(phi) ** 2)
+    t = math.tan(phi) ** 2
+    c = e_p2 * math.cos(phi) ** 2
+    aa = lam * math.cos(phi)
+
+    m = a * (
+        (1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256) * phi
+        - (3 * e2 / 8 + 3 * e2 ** 2 / 32 + 45 * e2 ** 3 / 1024) * math.sin(2 * phi)
+        + (15 * e2 ** 2 / 256 + 45 * e2 ** 3 / 1024) * math.sin(4 * phi)
+        - (35 * e2 ** 3 / 3072) * math.sin(6 * phi)
+    )
+
+    easting = k0 * n * (
+        aa
+        + (1 - t + c) * aa ** 3 / 6
+        + (5 - 18 * t + t ** 2 + 72 * c - 58 * e_p2) * aa ** 5 / 120
+    ) + 500000.0
+
+    northing = k0 * (
+        m
+        + n * math.tan(phi) * (
+            aa ** 2 / 2
+            + (5 - t + 9 * c + 4 * c ** 2) * aa ** 4 / 24
+            + (61 - 58 * t + t ** 2 + 600 * c - 330 * e_p2) * aa ** 6 / 720
+        )
+    )
+
+    return easting, northing
+
+
 def extraer_zip_proyecto(ruta_zip):
     """Descomprime el .zip del proyecto (carpeta completa, tal como la
     exporta QGIS/QField) a una carpeta de trabajo y la devuelve."""

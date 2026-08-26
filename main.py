@@ -73,6 +73,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.checkbox import CheckBox
 from kivy.uix.spinner import Spinner
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
 from kivy.uix.popup import Popup
 from kivy.uix.image import Image, AsyncImage
 from kivy.metrics import dp
@@ -224,93 +225,197 @@ class PantallaImportar(Screen):
     def ir_a_lista(self):
         self.manager.current = "lista"
 
-    # ---- ubicación de inicio sin Shapefile (búsqueda + coordenadas UTM) ----
+    # ---- ubicación de inicio sin Shapefile (estilo "Buscador de inmuebles" de Catastro) ----
+    def _en_segundo_plano(self, trabajo, callback):
+        """Ejecuta 'trabajo' (sin argumentos) en un hilo aparte -- para no
+        congelar la app mientras se espera respuesta de un servicio web --
+        y llama a 'callback(resultado, error)' de vuelta en el hilo
+        principal (obligatorio en Kivy: nada de tocar widgets desde otro
+        hilo) en cuanto termina."""
+        def hilo():
+            try:
+                resultado = trabajo()
+                error = None
+            except Exception as e:
+                _log_debug(f"EXCEPCION en busqueda de ubicacion: {e!r}")
+                resultado = None
+                error = e
+            Clock.schedule_once(lambda _dt: callback(resultado, error), 0)
+        threading.Thread(target=hilo, daemon=True).start()
+
     def _mostrar_popup_ubicacion_inicial(self, *_):
-        box = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(12))
+        raiz = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
 
-        box.add_widget(Label(
-            text="Busca una dirección/localidad, o introduce coordenadas UTM a mano.",
-            size_hint_y=None, height=dp(50),
-        ))
-
-        # -- búsqueda por texto (dirección / localidad) --
-        fila_busqueda = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
-        txt_direccion = TextInput(hint_text="Ej: Quintanilla de Valdebezana, Burgos", multiline=False)
-        btn_buscar = Button(text="Buscar", size_hint_x=None, width=dp(90))
-        fila_busqueda.add_widget(txt_direccion)
-        fila_busqueda.add_widget(btn_buscar)
-        box.add_widget(fila_busqueda)
-
-        resultados_box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(0), spacing=dp(4))
-        box.add_widget(resultados_box)
+        tabs = TabbedPanel(do_default_tab=False, tab_width=dp(110), size_hint_y=None, height=dp(190))
+        raiz.add_widget(tabs)
 
         estado = Label(text="", size_hint_y=None, height=dp(30))
-        box.add_widget(estado)
-
-        box.add_widget(Label(text="— o —", size_hint_y=None, height=dp(24)))
-
-        # -- coordenadas UTM manuales (ETRS89 / huso 30N, como el resto del proyecto) --
-        fila_utm = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
-        txt_este = TextInput(hint_text="UTM X (Este)", multiline=False, input_filter="float")
-        txt_norte = TextInput(hint_text="UTM Y (Norte)", multiline=False, input_filter="float")
-        fila_utm.add_widget(txt_este)
-        fila_utm.add_widget(txt_norte)
-        box.add_widget(fila_utm)
-
-        btn_ir_utm = Button(text="Ir a estas coordenadas", size_hint_y=None, height=dp(48))
-        box.add_widget(btn_ir_utm)
+        resultados_box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(0), spacing=dp(4))
+        scroll_resultados = ScrollView(do_scroll_x=False)
+        scroll_resultados.add_widget(resultados_box)
 
         btn_cerrar = Button(text="Cancelar", size_hint_y=None, height=dp(44))
-        box.add_widget(btn_cerrar)
-        box.add_widget(Label())  # relleno
+        raiz.add_widget(estado)
+        raiz.add_widget(scroll_resultados)
+        raiz.add_widget(btn_cerrar)
 
-        popup = Popup(title="Elegir ubicación de inicio", content=box, size_hint=(0.92, 0.85))
+        popup = Popup(title="Elegir ubicación de inicio", content=raiz, size_hint=(0.94, 0.9))
         btn_cerrar.bind(on_release=popup.dismiss)
 
-        def buscar_direccion(*_a):
-            texto = txt_direccion.text.strip()
-            if not texto:
-                estado.text = "Escribe algo para buscar."
-                return
-            estado.text = "Buscando..."
+        def mostrar_espera(mensaje):
+            estado.text = mensaje
             resultados_box.clear_widgets()
             resultados_box.height = dp(0)
 
+        def mostrar_lista_rc(resultados):
+            """Pinta una lista de (rc, descripcion) tocable; al tocar uno
+            se piden sus coordenadas y se navega al mapa."""
+            estado.text = f"{len(resultados)} resultado(s) — toca uno:"
+            resultados_box.clear_widgets()
+            resultados_box.height = dp(46) * len(resultados)
+            for rc, descripcion in resultados:
+                b = Button(text=f"{descripcion}\n[size=12]{rc}[/size]", markup=True,
+                           size_hint_y=None, height=dp(46),
+                           halign="left", valign="middle", shorten=True)
+                b.bind(size=lambda w, *_: setattr(w, "text_size", (w.width - dp(16), None)))
+                b.bind(on_release=lambda *_a, r=rc: pedir_coordenadas_de_rc(r))
+                resultados_box.add_widget(b)
+
+        def pedir_coordenadas_de_rc(rc, provincia="", municipio=""):
+            mostrar_espera("Consultando coordenadas en Catastro...")
+
             def trabajo():
-                try:
-                    import requests
-                    resp = requests.get(
-                        "https://nominatim.openstreetmap.org/search",
-                        params={"q": texto, "format": "json", "limit": 5, "countrycodes": "es"},
-                        headers={"User-Agent": "DigitalizacionDelAgua/1.0 (app de campo)"},
-                        timeout=10,
-                    )
-                    datos = resp.json() if resp.ok else []
-                except Exception as e:
-                    _log_debug(f"EXCEPCION al buscar direccion: {e!r}")
-                    datos = None
+                import catastro
+                return catastro.coordenadas_desde_rc(rc, provincia, municipio)
 
-                def mostrar(_dt):
-                    if datos is None:
-                        estado.text = "No se pudo buscar (¿sin conexión?)."
-                        return
-                    if not datos:
-                        estado.text = "Sin resultados. Prueba con otro texto."
-                        return
-                    estado.text = f"{len(datos)} resultado(s) — toca uno:"
-                    resultados_box.height = dp(44) * len(datos)
-                    for r in datos:
-                        etiqueta = r.get("display_name", "(sin nombre)")
-                        lat_r, lon_r = float(r["lat"]), float(r["lon"])
-                        b = Button(text=etiqueta, size_hint_y=None, height=dp(44),
-                                   halign="left", valign="middle", shorten=True)
-                        b.bind(size=lambda w, *_: setattr(w, "text_size", (w.width - dp(16), None)))
-                        b.bind(on_release=lambda *_a, la=lat_r, lo=lon_r: self._ir_al_mapa_en(popup, la, lo))
-                        resultados_box.add_widget(b)
+            def listo(resultado, error):
+                if error is not None:
+                    estado.text = f"No se pudo obtener la ubicación: {error}"
+                    return
+                lat_r, lon_r = resultado
+                self._ir_al_mapa_en(popup, lat_r, lon_r)
 
-                Clock.schedule_once(mostrar, 0)
+            self._en_segundo_plano(trabajo, listo)
 
-            threading.Thread(target=trabajo, daemon=True).start()
+        # -- pestaña 1: RC (Referencia Catastral directa) --
+        tab_rc = TabbedPanelItem(text="RC")
+        cont_rc = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+        cont_rc.add_widget(Label(text="Referencia Catastral (20 caracteres)", size_hint_y=None, height=dp(20)))
+        txt_rc = TextInput(hint_text="Ej: 09999A001007300...", multiline=False)
+        cont_rc.add_widget(txt_rc)
+        btn_rc = Button(text="Buscar", size_hint_y=None, height=dp(44))
+        cont_rc.add_widget(btn_rc)
+        tab_rc.add_widget(cont_rc)
+        tabs.add_widget(tab_rc)
+        tabs.default_tab = tab_rc
+
+        def buscar_rc(*_a):
+            rc = txt_rc.text.strip()
+            if not rc:
+                estado.text = "Escribe una referencia catastral."
+                return
+            pedir_coordenadas_de_rc(rc)
+
+        btn_rc.bind(on_release=buscar_rc)
+
+        # -- pestaña 2: Calle/Número --
+        tab_calle = TabbedPanelItem(text="Calle/Núm.")
+        cont_calle = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
+        fila1 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
+        txt_prov_calle = TextInput(hint_text="Provincia (ej: BURGOS)", multiline=False)
+        txt_muni_calle = TextInput(hint_text="Municipio", multiline=False)
+        fila1.add_widget(txt_prov_calle)
+        fila1.add_widget(txt_muni_calle)
+        cont_calle.add_widget(fila1)
+        fila2 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
+        txt_via = TextInput(hint_text="Vía (calle)", multiline=False)
+        txt_numero = TextInput(hint_text="Número", multiline=False, size_hint_x=None, width=dp(80))
+        fila2.add_widget(txt_via)
+        fila2.add_widget(txt_numero)
+        cont_calle.add_widget(fila2)
+        btn_calle = Button(text="Buscar", size_hint_y=None, height=dp(44))
+        cont_calle.add_widget(btn_calle)
+        tab_calle.add_widget(cont_calle)
+        tabs.add_widget(tab_calle)
+
+        def buscar_calle(*_a):
+            provincia, municipio, via = txt_prov_calle.text, txt_muni_calle.text, txt_via.text
+            if not provincia.strip() or not municipio.strip() or not via.strip():
+                estado.text = "Rellena provincia, municipio y vía."
+                return
+            mostrar_espera("Buscando en Catastro...")
+
+            def trabajo():
+                import catastro
+                return catastro.buscar_por_direccion(provincia, municipio, via, txt_numero.text)
+
+            def listo(resultado, error):
+                if error is not None:
+                    estado.text = f"Sin resultados: {error}"
+                    return
+                mostrar_lista_rc(resultado)
+
+            self._en_segundo_plano(trabajo, listo)
+
+        btn_calle.bind(on_release=buscar_calle)
+
+        # -- pestaña 3: Polígono/Parcela (la más útil para catastro rústico) --
+        tab_pp = TabbedPanelItem(text="Políg./Parc.")
+        cont_pp = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
+        fila3 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
+        txt_prov_pp = TextInput(hint_text="Provincia (ej: BURGOS)", multiline=False)
+        txt_muni_pp = TextInput(hint_text="Municipio", multiline=False)
+        fila3.add_widget(txt_prov_pp)
+        fila3.add_widget(txt_muni_pp)
+        cont_pp.add_widget(fila3)
+        fila4 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
+        txt_poligono = TextInput(hint_text="Polígono", multiline=False)
+        txt_parcela = TextInput(hint_text="Parcela", multiline=False)
+        fila4.add_widget(txt_poligono)
+        fila4.add_widget(txt_parcela)
+        cont_pp.add_widget(fila4)
+        btn_pp = Button(text="Buscar", size_hint_y=None, height=dp(44))
+        cont_pp.add_widget(btn_pp)
+        tab_pp.add_widget(cont_pp)
+        tabs.add_widget(tab_pp)
+
+        def buscar_poligono_parcela(*_a):
+            provincia, municipio = txt_prov_pp.text, txt_muni_pp.text
+            poligono, parcela = txt_poligono.text, txt_parcela.text
+            if not all(x.strip() for x in (provincia, municipio, poligono, parcela)):
+                estado.text = "Rellena provincia, municipio, polígono y parcela."
+                return
+            mostrar_espera("Buscando en Catastro...")
+
+            def trabajo():
+                import catastro
+                return catastro.buscar_por_poligono_parcela(provincia, municipio, poligono, parcela)
+
+            def listo(resultado, error):
+                if error is not None:
+                    estado.text = f"Sin resultados: {error}"
+                    return
+                mostrar_lista_rc(resultado)
+
+            self._en_segundo_plano(trabajo, listo)
+
+        btn_pp.bind(on_release=buscar_poligono_parcela)
+
+        # -- pestaña 4: Coordenadas UTM manuales --
+        tab_coord = TabbedPanelItem(text="Coordenadas")
+        cont_coord = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
+        cont_coord.add_widget(Label(text="UTM — huso 30N / ETRS89 (el mismo de tus Shapefiles)",
+                                     size_hint_y=None, height=dp(20)))
+        fila5 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
+        txt_este = TextInput(hint_text="X (Este) — ej: 441792", multiline=False, input_filter="float")
+        txt_norte = TextInput(hint_text="Y (Norte) — ej: 4480570", multiline=False, input_filter="float")
+        fila5.add_widget(txt_este)
+        fila5.add_widget(txt_norte)
+        cont_coord.add_widget(fila5)
+        btn_ir_utm = Button(text="Ir a estas coordenadas", size_hint_y=None, height=dp(44))
+        cont_coord.add_widget(btn_ir_utm)
+        tab_coord.add_widget(cont_coord)
+        tabs.add_widget(tab_coord)
 
         def ir_utm(*_a):
             try:
@@ -320,13 +425,11 @@ class PantallaImportar(Screen):
                 estado.text = "Coordenadas UTM no válidas."
                 return
             from importar_shapefile import _utm_a_latlon
-            # Todo el proyecto trabaja en ETRS89 / huso 30N (el mismo que
-            # traen los Shapefiles del Valle de Valdebezana).
             lat_r, lon_r = _utm_a_latlon(este, norte, zona=30, hemisferio_norte=True)
             self._ir_al_mapa_en(popup, lat_r, lon_r)
 
-        btn_buscar.bind(on_release=buscar_direccion)
         btn_ir_utm.bind(on_release=ir_utm)
+
         popup.open()
 
     def _ir_al_mapa_en(self, popup, lat, lon, zoom=17):
@@ -740,7 +843,15 @@ class PantallaLista(Screen):
 
     def abrir_config_ficha(self, *_):
         cfg = ds.cargar_configuracion()
-        cont = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
+        # Antes 'cont' no tenía altura propia (se estiraba a la altura
+        # del popup entero), así que con pocos campos quedaba un hueco
+        # enorme vacío arriba y todo el contenido apretado abajo -- justo
+        # donde el teclado lo tapaba al escribir. Con size_hint_y=None +
+        # altura = minimum_height, el contenedor mide justo lo que ocupa
+        # su contenido, y el ScrollView de fuera permite desplazarlo por
+        # encima del teclado si hiciera falta.
+        cont = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8), size_hint_y=None)
+        cont.bind(minimum_height=cont.setter("height"))
         cont.add_widget(Label(
             text="Elige el Excel modelo ya preparado (con el escudo/nombre\n"
                  "de tu municipio) y se rellena todo solo.",
@@ -764,7 +875,9 @@ class PantallaLista(Screen):
 
         escudo_pendiente = {"ruta": cfg.get("escudo_path", "")}
 
-        popup = Popup(title="Plantilla a utilizar", content=cont, size_hint=(0.9, 0.8))
+        scroll = ScrollView(do_scroll_x=False)
+        scroll.add_widget(cont)
+        popup = Popup(title="Plantilla a utilizar", content=scroll, size_hint=(0.9, 0.8))
 
         def _tras_elegir_archivo(ruta):
             if not ruta:
@@ -1570,15 +1683,23 @@ class PantallaMapa(Screen):
         if not self.mapview:
             return
         lat, lon = self.mapview.lat, self.mapview.lon
+        from importar_shapefile import _latlon_a_utm
+        este, norte = _latlon_a_utm(lat, lon, zona=30)
         puntos = ds.cargar_puntos()
         nuevo_id = (max((p["_id"] for p in puntos), default=-1)) + 1
         nuevo = {c: "" for c in ds.TODOS_CAMPOS}
         nuevo["_id"] = nuevo_id
         nuevo["Completado"] = False
+        # Lat/Lon: siempre en grados -- son los campos INTERNOS que usa
+        # el mapa para colocar el marcador (la librería del mapa
+        # necesita grados). Latitud/Longitud: son los campos que ve el
+        # usuario en la ficha, y por norma del proyecto van en UTM
+        # (huso 30N, el mismo que usan los Shapefiles reales), igual que
+        # los muestra QField -- nunca en grados.
         nuevo["Lat"] = f"{lat:.7f}"
         nuevo["Lon"] = f"{lon:.7f}"
-        nuevo["Latitud"] = f"{lat:.7f}"
-        nuevo["Longitud"] = f"{lon:.7f}"
+        nuevo["Latitud"] = f"{este:.3f}"
+        nuevo["Longitud"] = f"{norte:.3f}"
         puntos.append(nuevo)
         ds.guardar_puntos(puntos)
         self._abrir_ficha(nuevo)
@@ -1839,6 +1960,14 @@ def _coord_valida(valor):
 
 class DigitalizacionAguaApp(App):
     def build(self):
+        # Sin esto, Android superpone el teclado encima de la pantalla
+        # sin reajustar nada -- el campo que estás escribiendo puede
+        # quedar tapado (visto en el popup de "Plantilla a utilizar",
+        # pero afecta a cualquier campo de texto de la app). Con
+        # 'below_target', Kivy desplaza la vista para que el campo con
+        # el foco quede siempre visible justo encima del teclado.
+        from kivy.core.window import Window
+        Window.softinput_mode = "below_target"
         pedir_permisos()
         sm = ScreenManager(transition=SlideTransition())
         sm.add_widget(PantallaImportar(name="importar"))
