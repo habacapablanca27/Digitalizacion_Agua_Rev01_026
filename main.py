@@ -12,6 +12,7 @@ import traceback as _traceback
 import time as _time
 import os as _os
 import math
+import threading
 
 
 def _carpeta_crash_log():
@@ -139,17 +140,19 @@ class PantallaImportar(Screen):
         root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
         root.add_widget(Label(text="Digitalización del Agua", font_size=dp(22),
                                size_hint_y=None, height=dp(40), bold=True))
-        root.add_widget(Label(text="Importa el Padrón (CSV o Shapefile) para empezar,\n"
+        root.add_widget(Label(text="Importa el Padrón (Shapefile) para empezar,\n"
+                                    "elige dónde empezar si no tienes archivo,\n"
                                     "o continúa con los puntos ya cargados.",
-                               size_hint_y=None, height=dp(50)))
-
-        btn_importar = Button(text="Importar Padrón (CSV)", size_hint_y=None, height=dp(56))
-        btn_importar.bind(on_release=lambda *_: self.abrir_selector("csv"))
-        root.add_widget(btn_importar)
+                               size_hint_y=None, height=dp(60)))
 
         btn_importar_shp = Button(text="Importar Shapefile (ZIP)", size_hint_y=None, height=dp(56))
         btn_importar_shp.bind(on_release=lambda *_: self.abrir_selector("shapefile"))
         root.add_widget(btn_importar_shp)
+
+        btn_ubicacion = Button(text="Elegir ubicación de inicio (sin Shapefile)",
+                                size_hint_y=None, height=dp(56))
+        btn_ubicacion.bind(on_release=lambda *_: self._mostrar_popup_ubicacion_inicial())
+        root.add_widget(btn_ubicacion)
 
         # El botón de "carpeta QGIS" se quitó temporalmente: usa un mecanismo
         # de Android (elegir carpeta) que no está respondiendo bien y podía
@@ -220,6 +223,117 @@ class PantallaImportar(Screen):
 
     def ir_a_lista(self):
         self.manager.current = "lista"
+
+    # ---- ubicación de inicio sin Shapefile (búsqueda + coordenadas UTM) ----
+    def _mostrar_popup_ubicacion_inicial(self, *_):
+        box = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(12))
+
+        box.add_widget(Label(
+            text="Busca una dirección/localidad, o introduce coordenadas UTM a mano.",
+            size_hint_y=None, height=dp(50),
+        ))
+
+        # -- búsqueda por texto (dirección / localidad) --
+        fila_busqueda = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
+        txt_direccion = TextInput(hint_text="Ej: Quintanilla de Valdebezana, Burgos", multiline=False)
+        btn_buscar = Button(text="Buscar", size_hint_x=None, width=dp(90))
+        fila_busqueda.add_widget(txt_direccion)
+        fila_busqueda.add_widget(btn_buscar)
+        box.add_widget(fila_busqueda)
+
+        resultados_box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(0), spacing=dp(4))
+        box.add_widget(resultados_box)
+
+        estado = Label(text="", size_hint_y=None, height=dp(30))
+        box.add_widget(estado)
+
+        box.add_widget(Label(text="— o —", size_hint_y=None, height=dp(24)))
+
+        # -- coordenadas UTM manuales (ETRS89 / huso 30N, como el resto del proyecto) --
+        fila_utm = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(44), spacing=dp(6))
+        txt_este = TextInput(hint_text="UTM X (Este)", multiline=False, input_filter="float")
+        txt_norte = TextInput(hint_text="UTM Y (Norte)", multiline=False, input_filter="float")
+        fila_utm.add_widget(txt_este)
+        fila_utm.add_widget(txt_norte)
+        box.add_widget(fila_utm)
+
+        btn_ir_utm = Button(text="Ir a estas coordenadas", size_hint_y=None, height=dp(48))
+        box.add_widget(btn_ir_utm)
+
+        btn_cerrar = Button(text="Cancelar", size_hint_y=None, height=dp(44))
+        box.add_widget(btn_cerrar)
+        box.add_widget(Label())  # relleno
+
+        popup = Popup(title="Elegir ubicación de inicio", content=box, size_hint=(0.92, 0.85))
+        btn_cerrar.bind(on_release=popup.dismiss)
+
+        def buscar_direccion(*_a):
+            texto = txt_direccion.text.strip()
+            if not texto:
+                estado.text = "Escribe algo para buscar."
+                return
+            estado.text = "Buscando..."
+            resultados_box.clear_widgets()
+            resultados_box.height = dp(0)
+
+            def trabajo():
+                try:
+                    import requests
+                    resp = requests.get(
+                        "https://nominatim.openstreetmap.org/search",
+                        params={"q": texto, "format": "json", "limit": 5, "countrycodes": "es"},
+                        headers={"User-Agent": "DigitalizacionDelAgua/1.0 (app de campo)"},
+                        timeout=10,
+                    )
+                    datos = resp.json() if resp.ok else []
+                except Exception as e:
+                    _log_debug(f"EXCEPCION al buscar direccion: {e!r}")
+                    datos = None
+
+                def mostrar(_dt):
+                    if datos is None:
+                        estado.text = "No se pudo buscar (¿sin conexión?)."
+                        return
+                    if not datos:
+                        estado.text = "Sin resultados. Prueba con otro texto."
+                        return
+                    estado.text = f"{len(datos)} resultado(s) — toca uno:"
+                    resultados_box.height = dp(44) * len(datos)
+                    for r in datos:
+                        etiqueta = r.get("display_name", "(sin nombre)")
+                        lat_r, lon_r = float(r["lat"]), float(r["lon"])
+                        b = Button(text=etiqueta, size_hint_y=None, height=dp(44),
+                                   halign="left", valign="middle", shorten=True)
+                        b.bind(size=lambda w, *_: setattr(w, "text_size", (w.width - dp(16), None)))
+                        b.bind(on_release=lambda *_a, la=lat_r, lo=lon_r: self._ir_al_mapa_en(popup, la, lo))
+                        resultados_box.add_widget(b)
+
+                Clock.schedule_once(mostrar, 0)
+
+            threading.Thread(target=trabajo, daemon=True).start()
+
+        def ir_utm(*_a):
+            try:
+                este = float(txt_este.text)
+                norte = float(txt_norte.text)
+            except ValueError:
+                estado.text = "Coordenadas UTM no válidas."
+                return
+            from importar_shapefile import _utm_a_latlon
+            # Todo el proyecto trabaja en ETRS89 / huso 30N (el mismo que
+            # traen los Shapefiles del Valle de Valdebezana).
+            lat_r, lon_r = _utm_a_latlon(este, norte, zona=30, hemisferio_norte=True)
+            self._ir_al_mapa_en(popup, lat_r, lon_r)
+
+        btn_buscar.bind(on_release=buscar_direccion)
+        btn_ir_utm.bind(on_release=ir_utm)
+        popup.open()
+
+    def _ir_al_mapa_en(self, popup, lat, lon, zoom=17):
+        popup.dismiss()
+        pantalla_mapa = self.manager.get_screen("mapa")
+        pantalla_mapa._centro_forzado = (lat, lon, zoom)
+        self.manager.current = "mapa"
 
     # ---- importación desde carpeta de proyecto QGIS (.qgs), sin comprimir ----
     def abrir_selector_carpeta(self, *_):
@@ -1096,6 +1210,7 @@ class PantallaMapa(Screen):
         self.capa_fondo_widget = None
         self.capa_marcadores = None
         self._id_seleccionado = None
+        self._centro_forzado = None
         self.root_box = BoxLayout(orientation="vertical")
 
         cab = BoxLayout(size_hint_y=None, height=dp(48), padding=(dp(8), 0), spacing=dp(8))
@@ -1289,7 +1404,15 @@ class PantallaMapa(Screen):
             punto_seleccionado = next((p for p in puntos if p.get("_id") == self._id_seleccionado), None)
 
         zoom_inicial = 16
-        if punto_seleccionado is not None:
+        if self._centro_forzado is not None:
+            # Ubicación elegida a mano desde "Elegir ubicación de inicio"
+            # (búsqueda por texto o coordenadas UTM) -- tiene prioridad
+            # sobre el centrado habitual, y solo se usa una vez: la
+            # próxima vez que se entre al mapa (ej. tras editar un punto)
+            # vuelve a calcularse el centro normal.
+            lat_centro, lon_centro, zoom_inicial = self._centro_forzado
+            self._centro_forzado = None
+        elif punto_seleccionado is not None:
             lat_centro = float(punto_seleccionado["Lat"])
             lon_centro = float(punto_seleccionado["Lon"])
             zoom_inicial = 18  # más cerca, para ver bien el punto que se venía a buscar
