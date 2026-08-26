@@ -11,6 +11,7 @@ import sys
 import traceback as _traceback
 import time as _time
 import os as _os
+import math
 
 
 def _carpeta_crash_log():
@@ -1484,7 +1485,10 @@ class CapaVectorFondo:
 
     def __new__(cls, capas_fondo):
         from kivy_garden.mapview import MapLayer
-        from kivy.graphics import Color, Line, Rectangle, Ellipse
+        from kivy.graphics import (
+            Color, Line, Rectangle, Ellipse,
+            PushMatrix, PopMatrix, Translate, Scale as GScale,
+        )
         from kivy.core.text import Label as CoreLabel
 
         MAX_PUNTOS_POR_ANILLO = 120
@@ -1504,10 +1508,27 @@ class CapaVectorFondo:
                 self.capas = capas
                 self._texturas_etiquetas = {}  # (texto,color,tam) -> textura (cache)
                 self._ultimo_redibujado_completo = 0.0
+                self._referencia = None  # (lat1,lon1,xy1,lat2,lon2,xy2) del último redibujado completo
                 for capa in self.capas:
                     capa.setdefault("activa", True)
                     if "anillos_bbox" not in capa:
                         capa["anillos_bbox"] = [_bbox_anillo(a) for a in capa["anillos"]]
+
+                # El contenido real (líneas/etiquetas) se dibuja en
+                # self.canvas y solo se recalcula en un redibujado
+                # completo. Para poder "seguir" el arrastre mientras
+                # tanto sin recalcular nada, ese contenido queda envuelto
+                # en una transformación (mover + escalar) que sí se
+                # actualiza en cada frame -- es barato, son 4 números, no
+                # hay que recorrer ninguna capa. self.canvas.clear() en
+                # cada redibujado completo NO toca canvas.before/after,
+                # así que este envoltorio sobrevive.
+                self._transform_translate = Translate(0, 0)
+                self._transform_scale = GScale(1, 1, 1)
+                self.canvas.before.add(PushMatrix())
+                self.canvas.before.add(self._transform_translate)
+                self.canvas.before.add(self._transform_scale)
+                self.canvas.after.add(PopMatrix())
 
             def _textura_para(self, texto, estilo):
                 color = tuple(estilo["color"])
@@ -1541,28 +1562,52 @@ class CapaVectorFondo:
                 if mapa is None:
                     return
 
-                # Recalcular y volver a dibujar TODO (líneas + etiquetas de
-                # todas las capas activas) en cada fotograma de un arrastre
-                # o pellizco era el principal causante de la lentitud al
-                # mover el mapa -- Kivy llama a reposition() en cada frame
-                # del gesto, no solo al soltar. Mientras hay un dedo tocando
-                # la pantalla (mapa._touch_count > 0) nos quedamos con el
-                # último dibujo (que se queda quieto un instante mientras
-                # el mapa se desliza debajo) y solo se refresca cada 250ms
-                # como mucho, para que no se quede muy desfasado en
-                # arrastres largos. En cuanto se levanta el dedo, este
-                # mismo método se vuelve a llamar y como _touch_count ya
-                # es 0, se hace el redibujado completo y correcto.
                 ahora = _time.time()
-                if mapa._touch_count > 0 and (ahora - self._ultimo_redibujado_completo) < 0.25:
+                necesita_completo = (
+                    mapa._touch_count == 0
+                    or self._referencia is None
+                    or (ahora - self._ultimo_redibujado_completo) >= 0.25
+                )
+
+                if not necesita_completo:
+                    # Actualización barata: en vez de recorrer todas las
+                    # capas otra vez, se mueve/escala el dibujo que ya
+                    # había (envuelto en self._transform_*) para que siga
+                    # el gesto en tiempo real. Se usan dos puntos de
+                    # referencia fijos (dos esquinas de la vista en el
+                    # momento del último redibujado completo) para sacar,
+                    # con su nueva posición en pantalla, cuánto se ha
+                    # desplazado y escalado el mapa desde entonces.
+                    lat1, lon1, xy1, lat2, lon2, xy2 = self._referencia
+                    p1 = mapa.get_window_xy_from(lat1, lon1, mapa.zoom)
+                    p2 = mapa.get_window_xy_from(lat2, lon2, mapa.zoom)
+                    dist0 = math.hypot(xy2[0] - xy1[0], xy2[1] - xy1[1])
+                    dist_ahora = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+                    factor = dist_ahora / dist0 if dist0 > 1e-6 else 1.0
+                    self._transform_scale.x = factor
+                    self._transform_scale.y = factor
+                    self._transform_translate.x = p1[0] - factor * xy1[0]
+                    self._transform_translate.y = p1[1] - factor * xy1[1]
                     return
+
                 self._ultimo_redibujado_completo = ahora
+                self._transform_translate.x = 0
+                self._transform_translate.y = 0
+                self._transform_scale.x = 1
+                self._transform_scale.y = 1
 
                 self.canvas.clear()
                 bbox = mapa.get_bbox()
                 v_lat1, v_lon1, v_lat2, v_lon2 = bbox
                 v_lat_min, v_lat_max = min(v_lat1, v_lat2), max(v_lat1, v_lat2)
                 v_lon_min, v_lon_max = min(v_lon1, v_lon2), max(v_lon1, v_lon2)
+                # Dos esquinas opuestas de la vista actual, guardadas como
+                # referencia para las próximas actualizaciones baratas
+                # (hasta el siguiente redibujado completo).
+                self._referencia = (
+                    v_lat_min, v_lon_min, mapa.get_window_xy_from(v_lat_min, v_lon_min, mapa.zoom),
+                    v_lat_max, v_lon_max, mapa.get_window_xy_from(v_lat_max, v_lon_max, mapa.zoom),
+                )
 
                 # Para que las etiquetas no se amontonen unas encima de
                 # otras (como se veia en capas con muchas parcelas

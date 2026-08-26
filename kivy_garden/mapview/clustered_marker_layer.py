@@ -4,10 +4,11 @@ Layer that support point clustering
 ===================================
 """
 
-from math import atan, exp, floor, log, pi, sin, sqrt
+from math import atan, exp, floor, hypot, log, pi, sin, sqrt
 from os.path import dirname, join
 from time import time as _time_now
 
+from kivy.graphics import PushMatrix, PopMatrix, Translate, Scale as GScale
 from kivy.lang import Builder
 from kivy.metrics import dp
 from kivy.properties import (
@@ -400,7 +401,18 @@ class ClusteredMarkerLayer(MapLayer):
         self.cluster = None
         self.cluster_markers = []
         self._ultimo_redibujado_completo = 0.0
+        self._referencia = None
         super().__init__(**kwargs)
+        # Igual que en CapaVectorFondo: los widgets-marcador ya colocados
+        # quedan envueltos en una transformación (mover + escalar) que se
+        # puede actualizar barato en cada frame de un arrastre, sin tener
+        # que volver a consultar el cluster ni recrear ningún widget.
+        self._transform_translate = Translate(0, 0)
+        self._transform_scale = GScale(1, 1, 1)
+        self.canvas.before.add(PushMatrix())
+        self.canvas.before.add(self._transform_translate)
+        self.canvas.before.add(self._transform_scale)
+        self.canvas.after.add(PopMatrix())
 
     def add_marker(self, lon, lat, cls=MapMarker, options=None):
         if options is None:
@@ -419,14 +431,34 @@ class ClusteredMarkerLayer(MapLayer):
         if mapview is None:
             return
 
-        # Mismo motivo que en CapaVectorFondo: reposition() se llama en
-        # cada fotograma de un arrastre/pellizco, y volver a consultar el
-        # cluster + quitar y volver a añadir cada marcador visible en cada
-        # frame es trabajo de sobra mientras el dedo sigue en pantalla.
         ahora = _time_now()
-        if mapview._touch_count > 0 and (ahora - self._ultimo_redibujado_completo) < 0.25:
+        necesita_completo = (
+            mapview._touch_count == 0
+            or self._referencia is None
+            or (ahora - self._ultimo_redibujado_completo) >= 0.25
+        )
+
+        if not necesita_completo:
+            # Actualización barata: mueve/escala los widgets-marcador ya
+            # colocados en vez de recalcular el cluster y recrearlos --
+            # ver el mismo truco en CapaVectorFondo.reposition().
+            lat1, lon1, xy1, lat2, lon2, xy2 = self._referencia
+            p1 = mapview.get_window_xy_from(lat1, lon1, mapview.zoom)
+            p2 = mapview.get_window_xy_from(lat2, lon2, mapview.zoom)
+            dist0 = hypot(xy2[0] - xy1[0], xy2[1] - xy1[1])
+            dist_ahora = hypot(p2[0] - p1[0], p2[1] - p1[1])
+            factor = dist_ahora / dist0 if dist0 > 1e-6 else 1.0
+            self._transform_scale.x = factor
+            self._transform_scale.y = factor
+            self._transform_translate.x = p1[0] - factor * xy1[0]
+            self._transform_translate.y = p1[1] - factor * xy1[1]
             return
+
         self._ultimo_redibujado_completo = ahora
+        self._transform_translate.x = 0
+        self._transform_translate.y = 0
+        self._transform_scale.x = 1
+        self._transform_scale.y = 1
 
         margin = dp(48)
         set_marker_position = self.set_marker_position
@@ -439,6 +471,15 @@ class ClusteredMarkerLayer(MapLayer):
                 widget = self.create_widget_for(point)
             set_marker_position(mapview, widget)
             self.add_widget(widget)
+
+        # Dos esquinas opuestas de la zona visible, guardadas como
+        # referencia para las próximas actualizaciones baratas.
+        # (bbox aquí ya está reordenado arriba como lon_min,lat_min,lon_max,lat_max)
+        lon_min, lat_min, lon_max, lat_max = bbox
+        self._referencia = (
+            lat_min, lon_min, mapview.get_window_xy_from(lat_min, lon_min, mapview.zoom),
+            lat_max, lon_max, mapview.get_window_xy_from(lat_max, lon_max, mapview.zoom),
+        )
 
     def build_cluster(self):
         self.cluster = SuperCluster(
