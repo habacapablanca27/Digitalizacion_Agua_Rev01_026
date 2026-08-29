@@ -226,6 +226,40 @@ class PantallaImportar(Screen):
         self.manager.current = "lista"
 
     # ---- ubicación de inicio sin Shapefile (estilo "Buscador de inmuebles" de Catastro) ----
+    def _crear_campo_con_lista(self, hint_text, opciones_estaticas):
+        """TextInput que, según se escribe, muestra debajo una lista de
+        sugerencias tocables filtradas de 'opciones_estaticas' -- igual
+        que el desplegable de Provincia/Municipio de la web de Catastro.
+        Devuelve (contenedor_para_añadir_al_layout, el_textinput)."""
+        contenedor = BoxLayout(orientation="vertical", size_hint_y=None)
+        contenedor.bind(minimum_height=contenedor.setter("height"))
+        txt = TextInput(hint_text=hint_text, multiline=False, size_hint_y=None, height=dp(40))
+        lista = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(0))
+        contenedor.add_widget(txt)
+        contenedor.add_widget(lista)
+
+        def refrescar(*_a):
+            consulta = txt.text.strip().upper()
+            lista.clear_widgets()
+            if not consulta or consulta in opciones_estaticas:
+                lista.height = dp(0)
+                return
+            coincidencias = [o for o in opciones_estaticas if consulta in o][:4]
+            lista.height = dp(36) * len(coincidencias)
+            for opcion in coincidencias:
+                b = Button(text=opcion, size_hint_y=None, height=dp(36))
+
+                def elegir(_inst, valor=opcion):
+                    txt.text = valor
+                    lista.clear_widgets()
+                    lista.height = dp(0)
+
+                b.bind(on_release=elegir)
+                lista.add_widget(b)
+
+        txt.bind(text=refrescar)
+        return contenedor, txt
+
     def _en_segundo_plano(self, trabajo, callback):
         """Ejecuta 'trabajo' (sin argumentos) en un hilo aparte -- para no
         congelar la app mientras se espera respuesta de un servicio web --
@@ -246,10 +280,12 @@ class PantallaImportar(Screen):
     def _mostrar_popup_ubicacion_inicial(self, *_):
         raiz = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
 
-        tabs = TabbedPanel(do_default_tab=False, tab_width=dp(110), size_hint_y=None, height=dp(190))
+        tabs = TabbedPanel(do_default_tab=False, tab_width=dp(110), size_hint_y=None, height=dp(260))
         raiz.add_widget(tabs)
 
         estado = Label(text="", size_hint_y=None, height=dp(30))
+        estado.bind(width=lambda w, ancho: setattr(w, "text_size", (ancho - dp(20), None)))
+        estado.bind(texture_size=lambda w, tam: setattr(w, "height", max(dp(30), tam[1] + dp(10))))
         resultados_box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(0), spacing=dp(4))
         scroll_resultados = ScrollView(do_scroll_x=False)
         scroll_resultados.add_widget(resultados_box)
@@ -290,7 +326,8 @@ class PantallaImportar(Screen):
 
             def listo(resultado, error):
                 if error is not None:
-                    estado.text = f"No se pudo obtener la ubicación: {error}"
+                    _log_debug(f"Catastro: error completo al pedir coordenadas de RC: {error!r}")
+                    estado.text = "No se pudo obtener la ubicación (mira el debug_log.txt para el detalle)."
                     return
                 lat_r, lon_r = resultado
                 self._ir_al_mapa_en(popup, lat_r, lon_r)
@@ -321,12 +358,13 @@ class PantallaImportar(Screen):
         # -- pestaña 2: Calle/Número --
         tab_calle = TabbedPanelItem(text="Calle/Núm.")
         cont_calle = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
-        fila1 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
-        txt_prov_calle = TextInput(hint_text="Provincia (ej: BURGOS)", multiline=False)
-        txt_muni_calle = TextInput(hint_text="Municipio", multiline=False)
-        fila1.add_widget(txt_prov_calle)
-        fila1.add_widget(txt_muni_calle)
-        cont_calle.add_widget(fila1)
+        import catastro
+        cont_prov_calle, txt_prov_calle = self._crear_campo_con_lista(
+            "Provincia (ej: BURGOS)", catastro.PROVINCIAS)
+        cont_calle.add_widget(cont_prov_calle)
+        txt_muni_calle = TextInput(hint_text="Municipio", multiline=False,
+                                    size_hint_y=None, height=dp(40))
+        cont_calle.add_widget(txt_muni_calle)
         fila2 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
         txt_via = TextInput(hint_text="Vía (calle)", multiline=False)
         txt_numero = TextInput(hint_text="Número", multiline=False, size_hint_x=None, width=dp(80))
@@ -351,7 +389,8 @@ class PantallaImportar(Screen):
 
             def listo(resultado, error):
                 if error is not None:
-                    estado.text = f"Sin resultados: {error}"
+                    _log_debug(f"Catastro: error completo en la busqueda: {error!r}")
+                    estado.text = "Sin resultados (mira el debug_log.txt para el detalle)."
                     return
                 mostrar_lista_rc(resultado)
 
@@ -362,12 +401,12 @@ class PantallaImportar(Screen):
         # -- pestaña 3: Polígono/Parcela (la más útil para catastro rústico) --
         tab_pp = TabbedPanelItem(text="Políg./Parc.")
         cont_pp = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
-        fila3 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
-        txt_prov_pp = TextInput(hint_text="Provincia (ej: BURGOS)", multiline=False)
-        txt_muni_pp = TextInput(hint_text="Municipio", multiline=False)
-        fila3.add_widget(txt_prov_pp)
-        fila3.add_widget(txt_muni_pp)
-        cont_pp.add_widget(fila3)
+        cont_prov_pp, txt_prov_pp = self._crear_campo_con_lista(
+            "Provincia (ej: BURGOS)", catastro.PROVINCIAS)
+        cont_pp.add_widget(cont_prov_pp)
+        txt_muni_pp = TextInput(hint_text="Municipio", multiline=False,
+                                 size_hint_y=None, height=dp(40))
+        cont_pp.add_widget(txt_muni_pp)
         fila4 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
         txt_poligono = TextInput(hint_text="Polígono", multiline=False)
         txt_parcela = TextInput(hint_text="Parcela", multiline=False)
@@ -393,7 +432,8 @@ class PantallaImportar(Screen):
 
             def listo(resultado, error):
                 if error is not None:
-                    estado.text = f"Sin resultados: {error}"
+                    _log_debug(f"Catastro: error completo en la busqueda: {error!r}")
+                    estado.text = "Sin resultados (mira el debug_log.txt para el detalle)."
                     return
                 mostrar_lista_rc(resultado)
 

@@ -12,8 +12,26 @@
 import requests
 import xml.etree.ElementTree as ET
 
-_BASE_CALLEJERO = "http://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx"
-_BASE_COORD = "http://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx"
+_BASE_CALLEJERO = "https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCallejero.asmx"
+_BASE_COORD = "https://ovc.catastro.meh.es/ovcservweb/OVCSWLocalizacionRC/OVCCoordenadas.asmx"
+
+# Lista fija de las 52 provincias (no cambian), con la grafía que usa
+# Catastro en sus propios desplegables (sin tildes en varios nombres,
+# tal cual sale en su web). Para "Provincia" no hace falta llamar a
+# ningún servicio -- para "Municipio" sí haría falta (son ~8000 y
+# dependen de la provincia elegida), pendiente de implementar con una
+# consulta en vivo a Catastro.
+PROVINCIAS = [
+    "A CORUÑA", "ALAVA", "ALBACETE", "ALICANTE", "ALMERIA", "ASTURIAS",
+    "AVILA", "BADAJOZ", "BALEARES", "BARCELONA", "BURGOS", "CACERES",
+    "CADIZ", "CANTABRIA", "CASTELLON", "CEUTA", "CIUDAD REAL", "CORDOBA",
+    "CUENCA", "GIRONA", "GRANADA", "GUADALAJARA", "GUIPUZCOA", "HUELVA",
+    "HUESCA", "JAEN", "LA RIOJA", "LAS PALMAS", "LEON", "LLEIDA", "LUGO",
+    "MADRID", "MALAGA", "MELILLA", "MURCIA", "NAVARRA", "OURENSE",
+    "PALENCIA", "PONTEVEDRA", "SALAMANCA", "SANTA CRUZ DE TENERIFE",
+    "SEGOVIA", "SEVILLA", "SORIA", "TARRAGONA", "TERUEL", "TOLEDO",
+    "VALENCIA", "VALLADOLID", "VIZCAYA", "ZAMORA", "ZARAGOZA",
+]
 
 
 def _log(mensaje):
