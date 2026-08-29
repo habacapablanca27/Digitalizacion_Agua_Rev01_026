@@ -9,6 +9,7 @@
 # bien para Android (nos pasó con reportlab y con fpdf2/fontTools).
 
 import os
+import re
 from simple_pdf import SimplePDF, envolver_texto
 
 AZUL = (68, 114, 196)
@@ -315,13 +316,37 @@ def _caja_foto(pdf, x, y, w, h, etiqueta, ruta_foto, th=6):
                   size_pt=7, color=GRIS, align="C", box_w_mm=w)
 
 
+_RE_DIRECCION = re.compile(r"^(.*?\D)?\s*(\d+)\s*([A-Za-z]?)\s*$")
+
+
+def _clave_orden_direccion(punto):
+    """Saca (calle, número, letra) del campo 'Direccion' para poder
+    ordenar las fichas del PDF combinado como pide el cliente: primero
+    por nombre de calle, luego por número, y por último por la letra
+    (ej. 'CL SAN ANTONIO 9' antes que 'CL SAN ANTONIO 9A', y ambas antes
+    que 'CL SAN ANTONIO 10'). Si la dirección no tiene un número al
+    final (caso raro), va sin número (se agrupa al principio de su
+    calle) para no romper el resto del orden."""
+    direccion = (punto.get("Direccion") or "").strip()
+    m = _RE_DIRECCION.match(direccion)
+    if not m or not m.group(2):
+        return (direccion.upper(), -1, "")
+    calle = (m.group(1) or "").strip().upper()
+    numero = int(m.group(2))
+    letra = (m.group(3) or "").upper()
+    return (calle, numero, letra)
+
+
 def generar_todas_las_fichas(puntos, ruta_salida, municipio="", nucleo="", provincia="", escudo_path=None):
     """Genera UN SOLO archivo PDF con una página por punto (antes generaba
     un archivo suelto por cada punto). 'ruta_salida' es la ruta completa
-    del archivo .pdf a crear (no una carpeta)."""
+    del archivo .pdf a crear (no una carpeta).
+    Las páginas van ordenadas por dirección: nombre de calle, luego
+    número, y por último la letra (ej. 9, 9A, 10...)."""
     os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
+    puntos_ordenados = sorted(puntos, key=_clave_orden_direccion)
     pdf = SimplePDF(page_w_mm=ANCHO_PAG, page_h_mm=ALTO_PAG)
-    for i, p in enumerate(puntos):
+    for i, p in enumerate(puntos_ordenados):
         if i > 0:
             pdf.nueva_pagina()
         generar_ficha_pdf(p, municipio=municipio, nucleo=nucleo, provincia=provincia, pdf=pdf, escudo_path=escudo_path)

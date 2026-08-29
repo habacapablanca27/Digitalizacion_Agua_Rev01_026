@@ -74,8 +74,14 @@ def _armar_rc(rc_elem):
 
 
 def coordenadas_desde_rc(referencia_catastral, provincia="", municipio=""):
-    """Referencia Catastral (20 caracteres) -> (lat, lon) en WGS84 grados."""
-    referencia_catastral = referencia_catastral.strip().upper()
+    """Referencia Catastral -> (lat, lon) en WGS84 grados.
+    Este servicio en concreto (Consulta_CPMRC) solo acepta los primeros
+    14 caracteres de la referencia (la parte de "parcela"; los últimos
+    6 identifican la unidad dentro del edificio y no hacen falta aquí)
+    -- confirmado con el error real que devuelve Catastro si se le
+    manda la referencia completa de 20: "LA REFERENCIA CATASTRAL DEBE
+    SER DE 14 POSICIONES"."""
+    referencia_catastral = referencia_catastral.strip().upper()[:14]
     root = _pedir_xml(f"{_BASE_COORD}/Consulta_CPMRC", {
         "Provincia": provincia, "Municipio": municipio,
         "SRS": "EPSG:4326", "RC": referencia_catastral,

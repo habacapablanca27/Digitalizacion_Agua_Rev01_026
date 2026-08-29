@@ -355,93 +355,14 @@ class PantallaImportar(Screen):
 
         btn_rc.bind(on_release=buscar_rc)
 
-        # -- pestaña 2: Calle/Número --
-        tab_calle = TabbedPanelItem(text="Calle/Núm.")
-        cont_calle = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
-        import catastro
-        cont_prov_calle, txt_prov_calle = self._crear_campo_con_lista(
-            "Provincia (ej: BURGOS)", catastro.PROVINCIAS)
-        cont_calle.add_widget(cont_prov_calle)
-        txt_muni_calle = TextInput(hint_text="Municipio", multiline=False,
-                                    size_hint_y=None, height=dp(40))
-        cont_calle.add_widget(txt_muni_calle)
-        fila2 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
-        txt_via = TextInput(hint_text="Vía (calle)", multiline=False)
-        txt_numero = TextInput(hint_text="Número", multiline=False, size_hint_x=None, width=dp(80))
-        fila2.add_widget(txt_via)
-        fila2.add_widget(txt_numero)
-        cont_calle.add_widget(fila2)
-        btn_calle = Button(text="Buscar", size_hint_y=None, height=dp(44))
-        cont_calle.add_widget(btn_calle)
-        tab_calle.add_widget(cont_calle)
-        tabs.add_widget(tab_calle)
+        # Las pestañas "Calle/Número" y "Polígono/Parcela" se quitaron:
+        # ambas dependían de OVCCallejero.asmx (Consulta_DNPLOC /
+        # Consulta_DNPPP), y ese servicio da error 500 siempre -- está
+        # descontinuado (la propia web de Catastro ya no lo usa). Si en
+        # el futuro aparece una alternativa que funcione, se pueden
+        # volver a añadir.
 
-        def buscar_calle(*_a):
-            provincia, municipio, via = txt_prov_calle.text, txt_muni_calle.text, txt_via.text
-            if not provincia.strip() or not municipio.strip() or not via.strip():
-                estado.text = "Rellena provincia, municipio y vía."
-                return
-            mostrar_espera("Buscando en Catastro...")
-
-            def trabajo():
-                import catastro
-                return catastro.buscar_por_direccion(provincia, municipio, via, txt_numero.text)
-
-            def listo(resultado, error):
-                if error is not None:
-                    _log_debug(f"Catastro: error completo en la busqueda: {error!r}")
-                    estado.text = "Sin resultados (mira el debug_log.txt para el detalle)."
-                    return
-                mostrar_lista_rc(resultado)
-
-            self._en_segundo_plano(trabajo, listo)
-
-        btn_calle.bind(on_release=buscar_calle)
-
-        # -- pestaña 3: Polígono/Parcela (la más útil para catastro rústico) --
-        tab_pp = TabbedPanelItem(text="Políg./Parc.")
-        cont_pp = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
-        cont_prov_pp, txt_prov_pp = self._crear_campo_con_lista(
-            "Provincia (ej: BURGOS)", catastro.PROVINCIAS)
-        cont_pp.add_widget(cont_prov_pp)
-        txt_muni_pp = TextInput(hint_text="Municipio", multiline=False,
-                                 size_hint_y=None, height=dp(40))
-        cont_pp.add_widget(txt_muni_pp)
-        fila4 = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(40), spacing=dp(6))
-        txt_poligono = TextInput(hint_text="Polígono", multiline=False)
-        txt_parcela = TextInput(hint_text="Parcela", multiline=False)
-        fila4.add_widget(txt_poligono)
-        fila4.add_widget(txt_parcela)
-        cont_pp.add_widget(fila4)
-        btn_pp = Button(text="Buscar", size_hint_y=None, height=dp(44))
-        cont_pp.add_widget(btn_pp)
-        tab_pp.add_widget(cont_pp)
-        tabs.add_widget(tab_pp)
-
-        def buscar_poligono_parcela(*_a):
-            provincia, municipio = txt_prov_pp.text, txt_muni_pp.text
-            poligono, parcela = txt_poligono.text, txt_parcela.text
-            if not all(x.strip() for x in (provincia, municipio, poligono, parcela)):
-                estado.text = "Rellena provincia, municipio, polígono y parcela."
-                return
-            mostrar_espera("Buscando en Catastro...")
-
-            def trabajo():
-                import catastro
-                return catastro.buscar_por_poligono_parcela(provincia, municipio, poligono, parcela)
-
-            def listo(resultado, error):
-                if error is not None:
-                    _log_debug(f"Catastro: error completo en la busqueda: {error!r}")
-                    estado.text = "Sin resultados (mira el debug_log.txt para el detalle)."
-                    return
-                mostrar_lista_rc(resultado)
-
-            self._en_segundo_plano(trabajo, listo)
-
-        btn_pp.bind(on_release=buscar_poligono_parcela)
-
-        # -- pestaña 4: Coordenadas UTM manuales --
+        # -- pestaña 2: Coordenadas UTM manuales --
         tab_coord = TabbedPanelItem(text="Coordenadas")
         cont_coord = BoxLayout(orientation="vertical", spacing=dp(6), padding=dp(10))
         cont_coord.add_widget(Label(text="UTM — huso 30N / ETRS89 (el mismo de tus Shapefiles)",
