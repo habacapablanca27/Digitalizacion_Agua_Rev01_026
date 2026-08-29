@@ -64,6 +64,7 @@ import copy
 from datetime import datetime
 
 from kivy.app import App
+from kivy.lang import Builder
 from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
@@ -79,6 +80,36 @@ from kivy.uix.image import Image, AsyncImage
 from kivy.metrics import dp
 from kivy.clock import Clock
 from kivy.properties import ObjectProperty, NumericProperty, BooleanProperty
+
+# Paleta sacada directamente del logo "DigitAgua" (con PIL, no a ojo):
+# azul oscuro del conector de la válvula y azul medio del aro exterior.
+AZUL_OSCURO = (27 / 255, 49 / 255, 70 / 255, 1)
+AZUL_MEDIO = (31 / 255, 110 / 255, 176 / 255, 1)
+AZUL_CLARO = (100 / 255, 181 / 255, 230 / 255, 1)
+
+# Tema visual global: esto reemplaza el gris por defecto de Kivy en TODOS
+# los botones y campos de texto de la app de una sola vez (sin tener que
+# tocar cada Button()/TextInput() suelto de cada pantalla). Los botones
+# que ya fijan su propio background_color a mano (ej. las filas de la
+# lista de puntos, coloreadas según su estado) siguen funcionando igual,
+# porque eso se pone DESPUÉS de crear el botón y pisa este valor por
+# defecto.
+Builder.load_string(f"""
+<Button>:
+    background_normal: ''
+    background_down: ''
+    background_color: {AZUL_MEDIO}
+    color: 1, 1, 1, 1
+
+<TextInput>:
+    cursor_color: {AZUL_MEDIO}
+    selection_color: {AZUL_CLARO[0]}, {AZUL_CLARO[1]}, {AZUL_CLARO[2]}, 0.4
+
+<Popup>:
+    title_color: {AZUL_CLARO}
+    separator_color: {AZUL_MEDIO}
+""")
+
 
 import data_store as ds
 from export_shapefile import exportar_shapefile
@@ -139,8 +170,15 @@ class PantallaImportar(Screen):
     def __init__(self, **kw):
         super().__init__(**kw)
         root = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(12))
-        root.add_widget(Label(text="Digitalización del Agua", font_size=dp(22),
-                               size_hint_y=None, height=dp(40), bold=True))
+
+        ruta_logo = os.path.join(os.path.dirname(__file__), "assets", "logo_icono.png")
+        logo = Image(source=ruta_logo, size_hint_y=None, height=dp(120),
+                     allow_stretch=True, keep_ratio=True)
+        root.add_widget(logo)
+        root.add_widget(Label(text="DigitAgua", font_size=dp(26),
+                               color=AZUL_MEDIO, size_hint_y=None, height=dp(36), bold=True))
+        root.add_widget(Label(text="DIGITALIZACIÓN DEL AGUA", font_size=dp(13),
+                               color=AZUL_CLARO, size_hint_y=None, height=dp(22)))
         root.add_widget(Label(text="Importa el Padrón (Shapefile) para empezar,\n"
                                     "elige dónde empezar si no tienes archivo,\n"
                                     "o continúa con los puntos ya cargados.",
@@ -772,11 +810,14 @@ class PantallaLista(Screen):
         for p in ds.cargar_puntos():
             if filtro_texto and filtro_texto not in (p.get("Direccion", "") or "").lower():
                 continue
-            estado_txt = "[OK]" if p.get("Completado") else "[...]"
+            estado_icono = "✓" if p.get("Completado") else "…"
             fila = Button(
-                text=f"{estado_txt}  {p.get('NFijo','')}  —  {p.get('Direccion','(sin dirección)')}",
-                size_hint_y=None, height=dp(52), halign="left",
+                text=f"[b]{p.get('Direccion') or '(sin dirección)'}[/b]\n"
+                     f"Nº Fijo: {p.get('NFijo','—')}    {estado_icono}",
+                markup=True, halign="left", valign="middle",
+                size_hint_y=None, height=dp(58),
             )
+            fila.bind(size=lambda w, *_: setattr(w, "text_size", (w.width - dp(20), None)))
             # Mismo color que ya usan los marcadores del mapa (y que
             # venía definido en las reglas de QGIS): rojo = pendiente,
             # verde = completado, magenta = marcado para borrar.

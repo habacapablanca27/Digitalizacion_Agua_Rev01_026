@@ -12,7 +12,8 @@ requirements = python3==3.11.9,hostpython3==3.11.9,kivy==2.3.0,plyer,pyshp,reque
 orientation = portrait
 fullscreen = 0
 
-icon.filename = %(source.dir)s/assets/escudo.png
+icon.filename = %(source.dir)s/assets/logo_icono.png
+presplash.filename = %(source.dir)s/assets/logo_completo.png
 
 android.permissions = CAMERA,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,INTERNET
 
